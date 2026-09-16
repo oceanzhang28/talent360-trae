@@ -173,11 +173,20 @@ export function QuestionnaireCard({
           </p>
         )}
         {questionnaire && (
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/projects/${projectId}/questionnaire`}>
-              查看问卷预览
-            </Link>
-          </Button>
+          <>
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/projects/${projectId}/questionnaire`}>
+                查看问卷预览
+              </Link>
+            </Button>
+            {editable && (
+              <Button asChild size="sm">
+                <Link href={`/projects/${projectId}/questionnaire?view=edit`}>
+                  在线编辑
+                </Link>
+              </Button>
+            )}
+          </>
         )}
 
         {editable && (

@@ -7,9 +7,12 @@ import { createProject, publishProject } from "@/modules/projects/service";
 import {
   applyTemplate,
   checkQuestionnaireExcel,
+  deleteTemplate,
   getProjectQuestionnaire,
+  getTemplateDetail,
   importQuestionnaire,
   listTemplates,
+  renameTemplate,
   saveAsTemplate,
 } from "@/modules/questionnaires/service";
 import {
@@ -24,10 +27,12 @@ import {
 describe.skipIf(!process.env.DATABASE_URL)("问卷（Sprint 3）", () => {
   const HR1_NO = "it-s3-hr1";
   const EMP_NO = "it-s3-emp";
+  const ADMIN_NO = "it-s3-admin";
   const NAME_PREFIX = "IT-S3-";
   const TEMPLATE_PREFIX = "IT-S3 模板";
   let hr1: User;
   let emp: User;
+  let admin: User;
 
   const HOUR = 60 * 60 * 1000;
 
@@ -65,6 +70,15 @@ describe.skipIf(!process.env.DATABASE_URL)("问卷（Sprint 3）", () => {
       ensure(HR1_NO, "集成测试S3HR"),
       ensure(EMP_NO, "集成测试S3员工"),
     ]);
+    admin = await prisma.user.upsert({
+      where: { employeeNo: ADMIN_NO },
+      update: { systemRole: "SYSTEM_ADMIN" },
+      create: {
+        employeeNo: ADMIN_NO,
+        name: "集成测试S3管理员",
+        systemRole: "SYSTEM_ADMIN",
+      },
+    });
   });
 
   afterAll(async () => {
@@ -79,7 +93,7 @@ describe.skipIf(!process.env.DATABASE_URL)("问卷（Sprint 3）", () => {
       where: { name: { startsWith: NAME_PREFIX } },
     });
     await prisma.user.deleteMany({
-      where: { employeeNo: { in: [HR1_NO, EMP_NO] } },
+      where: { employeeNo: { in: [HR1_NO, EMP_NO, ADMIN_NO] } },
     });
   });
 
@@ -329,5 +343,122 @@ describe.skipIf(!process.env.DATABASE_URL)("问卷（Sprint 3）", () => {
       () => saveAsTemplate(project.id, emp, `${TEMPLATE_PREFIX}越权`),
       403,
     );
+  });
+
+  it("模板库管理：详情 / 重命名 / 同名冲突 / 删除不影响已复制的项目问卷", async () => {
+    const source = await createTestProject("模板管理源");
+    await importQuestionnaire(
+      source.id,
+      hr1,
+      await generateQuestionnaireTemplate(),
+    );
+    const template = await saveAsTemplate(
+      source.id,
+      hr1,
+      `${TEMPLATE_PREFIX}管理`,
+    );
+    expect(template.createdById).toBe(hr1.id);
+
+    // 复制到目标项目（深拷贝，独立存在）
+    const target = await createTestProject("模板管理目标");
+    await applyTemplate(target.id, hr1, template.id);
+
+    // 列表带创建者；详情返回维度树
+    const listed = (await listTemplates()).find((t) => t.id === template.id);
+    expect(listed?.createdById).toBe(hr1.id);
+    const detail = await getTemplateDetail(template.id);
+    expect(detail.dimensionCount).toBe(4);
+    expect(detail.questionCount).toBe(5);
+    expect(detail.dimensions.map((d) => d.name)).toEqual([
+      "团队管理",
+      "专业能力",
+    ]);
+
+    // 重命名
+    const renamed = await renameTemplate(
+      template.id,
+      hr1,
+      `${TEMPLATE_PREFIX}管理改名`,
+    );
+    expect(renamed.templateName).toBe(`${TEMPLATE_PREFIX}管理改名`);
+    expect(renamed.dimensionCount).toBe(4);
+
+    // 同名冲突 409；改成自己当前名字应放行（幂等）
+    const another = await saveAsTemplate(
+      source.id,
+      hr1,
+      `${TEMPLATE_PREFIX}另一个`,
+    );
+    await expectApiError(
+      () => renameTemplate(another.id, hr1, `${TEMPLATE_PREFIX}管理改名`),
+      409,
+    );
+    const same = await renameTemplate(
+      another.id,
+      hr1,
+      `${TEMPLATE_PREFIX}另一个`,
+    );
+    expect(same.templateName).toBe(`${TEMPLATE_PREFIX}另一个`);
+
+    // 空名称 400
+    await expectApiError(() => renameTemplate(another.id, hr1, "   "), 400);
+
+    // 权限：非创建者且非系统管理员
+    await expectApiError(
+      () => renameTemplate(another.id, emp, `${TEMPLATE_PREFIX}越权改名`),
+      403,
+    );
+    await expectApiError(() => deleteTemplate(another.id, emp), 403);
+    await expectApiError(() => getTemplateDetail("not-exist"), 404);
+
+    // 删除模板：模板消失，但已复制的项目问卷与源项目问卷都不受影响（PRD 第 13 节）
+    await deleteTemplate(template.id, hr1);
+    await expectApiError(() => getTemplateDetail(template.id), 404);
+    const targetDto = await getProjectQuestionnaire(target.id, hr1);
+    expect(targetDto?.questionCount).toBe(5);
+    expect(targetDto?.dimensions.map((d) => d.name)).toEqual([
+      "团队管理",
+      "专业能力",
+    ]);
+    expect((await getProjectQuestionnaire(source.id, hr1))?.questionCount).toBe(
+      5,
+    );
+
+    await deleteTemplate(another.id, hr1);
+    expect((await listTemplates()).some((t) => t.id === another.id)).toBe(
+      false,
+    );
+  });
+
+  it("历史模板（无创建者）：创建者本人也不能改，系统管理员可以", async () => {
+    const source = await createTestProject("历史模板源");
+    await importQuestionnaire(
+      source.id,
+      hr1,
+      await generateQuestionnaireTemplate(),
+    );
+    const template = await saveAsTemplate(
+      source.id,
+      hr1,
+      `${TEMPLATE_PREFIX}历史`,
+    );
+    // 模拟迁移前创建的模板（createdById 为空）
+    await prisma.questionnaire.update({
+      where: { id: template.id },
+      data: { createdById: null },
+    });
+
+    await expectApiError(
+      () => renameTemplate(template.id, hr1, `${TEMPLATE_PREFIX}历史改名`),
+      403,
+    );
+    const renamed = await renameTemplate(
+      template.id,
+      admin,
+      `${TEMPLATE_PREFIX}历史改名`,
+    );
+    expect(renamed.templateName).toBe(`${TEMPLATE_PREFIX}历史改名`);
+    await deleteTemplate(template.id, admin);
+    await expectApiError(() => getTemplateDetail(template.id), 404);
   });
 });

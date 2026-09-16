@@ -10,6 +10,7 @@ import {
   requireSystemAdmin,
 } from "@/lib/permissions";
 import { writeAudit } from "@/modules/audit/service";
+import { validateProjectQuestionnaire } from "@/modules/questionnaires/validate-project";
 import { buildAndPersistSnapshots } from "@/modules/results/snapshot";
 import { ScoringStructureError } from "@/modules/scoring";
 
@@ -427,6 +428,14 @@ export async function publishProject(
   });
   if (dimensionCount === 0 || questionCount === 0) {
     throw new ApiError(400, "发布前必须先导入问卷（至少一个维度和一道题目）");
+  }
+  // 问卷完整性校验（PRD 第 14 节）：权重合计、题目编号唯一、适用关系等
+  // 在线编辑允许保存中间状态，故此处必须严格校验，避免不完整问卷被发布
+  const questionnaireErrors = await validateProjectQuestionnaire(projectId);
+  if (questionnaireErrors.length > 0) {
+    throw new ApiError(400, "问卷校验未通过，请修正后发布", {
+      validationErrors: questionnaireErrors,
+    });
   }
   // TODO(Sprint 4): 校验被评人与评价关系已配置
   const now = Date.now();

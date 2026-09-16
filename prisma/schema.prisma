@@ -110,6 +110,9 @@ model Questionnaire {
   projectId    String?   @unique
   templateName String?
   isTemplate   Boolean   @default(false)
+  // 模板创建者（PRD 第 13 节模板库归属；改名/删除限创建者或系统管理员）。项目问卷为空；
+  // 与 Project.frozenBy 同样只存用户 id，不建外键
+  createdById  String?
   lockedAt     DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt

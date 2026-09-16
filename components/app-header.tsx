@@ -38,6 +38,7 @@ export function AppHeader({
       label: "项目管理",
       visible: Boolean(user?.isProjectAdmin),
     },
+    { href: "/templates", label: "模板库", visible: Boolean(user) },
     {
       href: "/admin/users",
       label: "用户管理",

@@ -250,3 +250,49 @@
 
 **前置条件（需人工在飞书开放平台完成）**：创建企业自建应用 → 配置重定向 URL → 申请「获取用户受雇信息」等权限 → 发布版本并等待管理员审批 → 将 App ID/Secret 写入 `.env`（`AUTH_MODE=feishu`）。
 
+## Sprint 12：在线问卷编辑 + 维度级适用关系 ✅（2026-09-16 完成）
+
+目标（V1 第 1/2 项 + MVP 遗留项）：让 HR 不必回 Excel 重导即可改问卷，并补上 PRD 11.1 的**维度级适用关系**配置。
+
+- [x] **整树保存 API**：`PUT /api/projects/:id/questionnaire`（PRD 12.1）
+  - [x] 复用 Excel 导入的同一套中间表示与校验规则（`validate.ts`），两条路径口径一致
+  - [x] **允许保存校验未通过的中间状态**（先搭结构再配权重），返回 `validationErrors` 供 UI 实时提示
+  - [x] 守卫沿用 `requireEditableQuestionnaire`（项目 DRAFT/PUBLISHED + 未锁定；非项目管理员 403）
+  - [x] 入参严格校验（缺字段/key 重复/维度不存在/题型非法 → 400）
+- [x] **发布前强校验兜底**（PRD 14）：`publishProject` 新增 `validateProjectQuestionnaire`（权重合计、题目编号唯一、适用关系等），否则编辑器保存的中间态问卷会被发布。新增 `modules/questionnaires/validate-project.ts` 供发布与编辑复用（避免 projects ↔ questionnaires 循环依赖）
+- [x] **维度级适用关系**（PRD 11.1）：维度（含二级维度）可配默认适用关系；题目级 override 保持不变
+- [x] **在线编辑器 UI**（`app/projects/[id]/questionnaire/questionnaire-editor.tsx`）：维度/题目新增·删除·复制、一级/二级维度、字段编辑（名称/说明/权重/题型/题干/必答）、题目跨维度移动、批量删除、实时校验提示
+- [x] **拖拽排序**（PRD 12.1「拖动排序 / 跨维度移动」）：引入 `@dnd-kit/core` + `@dnd-kit/sortable`
+  - [x] 维度在同级之间拖动排序；题目在同维度内拖动排序
+  - [x] 题目可拖到其他维度（拖到目标题目行或目标维度题目区域），含拖入空维度
+  - [x] 鼠标移动 4px 激活（不与输入框点击冲突）；触屏长按 200ms 激活（保留页面滚动）；另保留上移/下移按钮作为键盘与移动端兜底
+- [x] **自动保存 + 撤销/重做**：变更后 1.2s 防抖保存（与评价端草稿同一节奏）；历史快照支持 ⌘/Ctrl+Z 与 ⇧⌘/Ctrl+Z（同一字段连续输入合并为一步，焦点在输入框内时保留系统原生撤销）
+- [x] 入口：问卷页 `?view=edit`（默认仍为按关系预览，保持既有行为）＋ 项目设置卡片「在线编辑」按钮
+
+**关键设计判断**：
+1. 草稿写入窗口是项目 `ACTIVE`，问卷可编辑窗口是 `DRAFT/PUBLISHED` 且未锁定 —— **两者互斥**，因此整树替换（`replaceProjectQuestionnaire`）不会销毁任何 `DraftAnswer`（铁律 4 安全）。
+2. 编辑器复用服务端纯函数 `validateQuestionnaire` 做前端实时提示，避免两套规则漂移。
+3. 「在线搭建」需要允许保存不完整问卷，故必须同时补发布前强校验，否则不完整问卷可发布导致评分口径错误。
+4. 拖拽/排序逻辑抽到 `editor-model.ts`（纯函数：`moveQuestionByDrag` / `reorderDimensions`），因为浏览器真实拖拽受时序影响、不适合作为唯一保障；组件拆为 `editor-parts.tsx` 以满足 Hooks 规则（`useSortable` 不能在循环/渲染函数内调用）。
+
+**验收结果**：✅ 新增单测 `tests/unit/questionnaire-editor-model.test.ts`（13 用例：同维度换序 / 跨维度移动 / 拖入空维度 / 无变化返回 null / 不同父级维度禁止移动 / 编号生成 / 入参转换 / DTO 还原）、集成测试 `tests/integration/questionnaire-editor.test.ts`（10 用例：从零搭建 / 维度+二级维度适用关系落库 / 排序与跨维度移动 / 复制与删除 / 中间态可保存 / 发布拦截与修正后可发布 / 锁定与 ACTIVE 守卫 / 非管理员 403 / 空问卷可存但不可发布 / 入参非法 400）与 E2E `tests/e2e/questionnaire-editor.spec.ts`（拖拽同维度换序 + 跨维度移动并落库；自动保存往返 + 撤销回滚 + 新增题目触发校验提示 + 删除后恢复通过）。单测过程中实测修掉两个真 bug：`uniqueCode` 副本序号跳跃、`unchanged` 判断漏比归属维度导致跨维度移动被吞。全套 **238 vitest + 43 E2E** 通过（拖拽用例因 Playwright 无拖拽手势 API 仅在 chromium 工程运行），typecheck / lint / format 通过。
+
+## Sprint 13：问卷模板库管理 ✅（2026-09-16 完成）
+
+目标（V1 第 3 项 + PRD 第 13 节）：Sprint 3 已有「保存为模板 / 从模板复制」，本 Sprint 补齐模板库的**列表管理**（查看内容、重命名、删除）。
+
+- [x] **模板归属**（`Questionnaire.createdById`，migration `add_questionnaire_template_creator`）：`saveAsTemplate` 记录创建者；与 `Project.frozenBy` 一样只存用户 id 不建外键
+- [x] **权限模型**（PRD 第 13 节未规定，按内部共享资源设计）：
+  - 查看 / 引用模板：所有登录用户（沿用 Sprint 3 口径）
+  - 重命名 / 删除：**模板创建者或系统管理员**；迁移前的历史模板（`createdById` 为空）仅系统管理员可操作，避免误删他人模板
+- [x] **API**：`GET /api/questionnaire/templates/:id`（维度树预览）、`PATCH`（重命名，同名 409 / 空名 400）、`DELETE`（删除，级联清理维度与题目）
+- [x] **管理页** `app/templates`：模板列表（维度/题目数、创建时间、历史模板标记）+ 展开「查看内容」（维度树含权重、适用关系、题目）+ 行内重命名 + 删除确认；顶栏新增「模板库」入口（所有登录用户可见）
+- [x] `TemplateDTO` 增加 `createdById`，列表接口一并返回供前端判断可管理性
+
+**关键设计判断**：
+1. 模板是**深拷贝的独立数据**，删除模板不影响任何项目问卷（列表页与删除确认文案均明确提示）；测试用「先复制到项目再删模板」验证这一点。
+2. 界面隐藏操作入口不算鉴权（铁律 9）：服务端 `requireTemplateManager` 独立校验，E2E 额外用非创建者账号直调 PATCH/DELETE 断言 403。
+
+**验收结果**：✅ 集成测试新增 2 用例（模板库管理全流程：详情 / 重命名 / 同名 409 / 幂等改名 / 空名 400 / 越权 403 / 404 / 删除后项目问卷不受影响；历史模板仅系统管理员可改）+ E2E `tests/e2e/templates.spec.ts`（列表→查看内容→重命名→刷新验证→删除；非创建者无管理入口且接口 403，双工程）。全套 **240 vitest + 47 E2E** 通过，typecheck / lint / format 通过。
+
+

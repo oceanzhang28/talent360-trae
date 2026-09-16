@@ -64,6 +64,8 @@ export type TemplateDTO = {
   templateName: string;
   dimensionCount: number;
   questionCount: number;
+  /** 模板创建者（用于前端判断能否改名/删除）；迁移前的旧模板为空 */
+  createdById: string | null;
   createdAt: string;
 };
 
@@ -378,6 +380,7 @@ export async function listTemplates(): Promise<TemplateDTO[]> {
         templateName: t.templateName ?? "未命名模板",
         dimensionCount: dto.dimensionCount,
         questionCount: dto.questionCount,
+        createdById: t.createdById,
         createdAt: t.createdAt.toISOString(),
       };
     }),
@@ -419,6 +422,175 @@ export async function importQuestionnaire(
   return (await getProjectQuestionnaire(projectId, user))!;
 }
 
+// ---------- 在线编辑保存（PRD 第 12.1 节） ----------
+
+/**
+ * 在线搭建 / 编辑：整树保存（替换项目问卷的维度与题目）。
+ *
+ * 设计要点：
+ * - 复用 Excel 导入的同一套中间表示与校验规则（validate.ts），保证两条路径口径一致
+ * - **允许保存「校验未通过」的中间状态**：编辑是持续过程（先搭结构再配权重），
+ *   若强制校验通过就无法保存；完整性由发布前校验兜底（见 validate-project.ts）
+ * - 整树替换不会丢失草稿：草稿写入窗口是项目 ACTIVE，而此处守卫要求 DRAFT/PUBLISHED
+ *   且问卷未锁定，两者互斥（saveDraft 的 ACTIVE 守卫见 review-tasks/service.ts）
+ */
+export async function saveProjectQuestionnaire(
+  projectId: string,
+  user: User,
+  body: unknown,
+): Promise<{
+  questionnaire: QuestionnaireDTO;
+  validationErrors: ValidationError[];
+}> {
+  await requireEditableQuestionnaire(projectId, user);
+  const data = parseEditorInput(body);
+  const validationErrors = validateQuestionnaire(data);
+  await replaceProjectQuestionnaire(projectId, dataToTree(data));
+  return {
+    questionnaire: (await getProjectQuestionnaire(projectId, user))!,
+    validationErrors,
+  };
+}
+
+function parseEditorInput(body: unknown): QuestionnaireData {
+  const raw = (body ?? {}) as { dimensions?: unknown; questions?: unknown };
+  if (!Array.isArray(raw.dimensions) || !Array.isArray(raw.questions)) {
+    throw new ApiError(400, "请求体必须包含 dimensions 与 questions 数组");
+  }
+  const dimensions: QuestionnaireData["dimensions"] = raw.dimensions.map(
+    (item, index) => parseEditorDimension(item, index),
+  );
+  const questions: QuestionnaireData["questions"] = raw.questions.map(
+    (item, index) => parseEditorQuestion(item, index),
+  );
+
+  const keys = new Set<string>();
+  for (const dim of dimensions) {
+    if (keys.has(dim.key)) {
+      throw new ApiError(400, `维度 key 重复：${dim.key}`);
+    }
+    keys.add(dim.key);
+  }
+  for (const q of questions) {
+    if (!keys.has(q.dimensionKey)) {
+      throw new ApiError(400, `题目 ${q.code} 引用的维度不存在`);
+    }
+  }
+  return { dimensions, questions };
+}
+
+function parseEditorDimension(
+  item: unknown,
+  index: number,
+): QuestionnaireData["dimensions"][number] {
+  const where = `dimensions[${index}]`;
+  const raw = item as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object") {
+    throw new ApiError(400, `${where} 格式错误`);
+  }
+  const key = requireString(raw.key, `${where}.key`);
+  const name = requireString(raw.name, `${where}.name`);
+  const parentKey =
+    raw.parentKey === null || raw.parentKey === undefined
+      ? null
+      : requireString(raw.parentKey, `${where}.parentKey`);
+  return {
+    key,
+    parentKey,
+    name,
+    description: optionalString(raw.description, `${where}.description`),
+    weight: requireNumber(raw.weight, `${where}.weight`),
+    order: requireOrder(raw.order, `${where}.order`),
+    applicable: requireRelationFlags(raw.applicable, `${where}.applicable`),
+  };
+}
+
+function parseEditorQuestion(
+  item: unknown,
+  index: number,
+): QuestionnaireData["questions"][number] {
+  const where = `questions[${index}]`;
+  const raw = item as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object") {
+    throw new ApiError(400, `${where} 格式错误`);
+  }
+  const type =
+    raw.type === "TEXT" ? "TEXT" : raw.type === "RATING" ? "RATING" : null;
+  if (!type) throw new ApiError(400, `${where}.type 必须为 RATING 或 TEXT`);
+  const overrideRelationRules = raw.overrideRelationRules === true;
+  return {
+    dimensionKey: requireString(raw.dimensionKey, `${where}.dimensionKey`),
+    code: requireString(raw.code, `${where}.code`),
+    type,
+    title: requireString(raw.title, `${where}.title`),
+    description: optionalString(raw.description, `${where}.description`),
+    // 开放题不设权重：入参带权重也忽略为空，与 Excel 导入口径一致
+    weight:
+      type === "TEXT" ? null : requireNumber(raw.weight, `${where}.weight`),
+    required: raw.required !== false,
+    order: requireOrder(raw.order, `${where}.order`),
+    overrideRelationRules,
+    applicable: overrideRelationRules
+      ? requireRelationFlags(raw.applicable, `${where}.applicable`)
+      : { self: true, manager: true, peer: true, subordinate: true },
+  };
+}
+
+function requireString(value: unknown, where: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ApiError(400, `${where} 必须为非空字符串`);
+  }
+  return value.trim();
+}
+
+function optionalString(value: unknown, where: string): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") {
+    throw new ApiError(400, `${where} 必须为字符串`);
+  }
+  return value.trim() === "" ? null : value.trim();
+}
+
+function requireNumber(value: unknown, where: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > 100
+  ) {
+    throw new ApiError(400, `${where} 必须为 0~100 的数字`);
+  }
+  return value;
+}
+
+function requireOrder(value: unknown, where: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new ApiError(400, `${where} 必须为非负整数`);
+  }
+  return value;
+}
+
+function requireRelationFlags(
+  value: unknown,
+  where: string,
+): QuestionnaireData["dimensions"][number]["applicable"] {
+  const raw = value as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object") {
+    throw new ApiError(400, `${where} 必须为对象`);
+  }
+  for (const flag of ["self", "manager", "peer", "subordinate"]) {
+    if (typeof raw[flag] !== "boolean") {
+      throw new ApiError(400, `${where}.${flag} 必须为布尔值`);
+    }
+  }
+  return {
+    self: raw.self as boolean,
+    manager: raw.manager as boolean,
+    peer: raw.peer as boolean,
+    subordinate: raw.subordinate as boolean,
+  };
+}
+
 // ---------- 模板 ----------
 
 /** 保存为模板：深拷贝项目问卷（维度 + 题目） */
@@ -448,7 +620,7 @@ export async function saveAsTemplate(
 
   const template = await prisma.$transaction(async (tx) => {
     const created = await tx.questionnaire.create({
-      data: { isTemplate: true, templateName: name },
+      data: { isTemplate: true, templateName: name, createdById: user.id },
     });
     await createDimensionsWithQuestions(tx, created.id, tree);
     return created;
@@ -459,6 +631,7 @@ export async function saveAsTemplate(
     templateName: name,
     dimensionCount: dto.dimensionCount,
     questionCount: dto.questionCount,
+    createdById: template.createdById,
     createdAt: template.createdAt.toISOString(),
   };
 }
@@ -470,13 +643,82 @@ export async function applyTemplate(
   templateId: string,
 ): Promise<QuestionnaireDTO> {
   await requireEditableQuestionnaire(projectId, user);
+  const template = await assertTemplate(templateId);
+  const tree = await loadDbTree(template.id);
+  await replaceProjectQuestionnaire(projectId, tree);
+  return (await getProjectQuestionnaire(projectId, user))!;
+}
+
+/** 模板详情（维度树预览）：模板库对所有登录用户可见（PRD 第 13 节） */
+export async function getTemplateDetail(
+  templateId: string,
+): Promise<QuestionnaireDTO> {
+  const template = await assertTemplate(templateId);
+  const tree = await loadDbTree(template.id);
+  return treeToDto(template.id, null, tree);
+}
+
+/** 模板重命名：仅创建者或系统管理员 */
+export async function renameTemplate(
+  templateId: string,
+  user: User,
+  templateName: unknown,
+): Promise<TemplateDTO> {
+  await requireTemplateManager(templateId, user);
+  const name = typeof templateName === "string" ? templateName.trim() : "";
+  if (!name) throw new ApiError(400, "模板名称不能为空");
+  if (name.length > 100) throw new ApiError(400, "模板名称不能超过 100 字");
+  const duplicated = await prisma.questionnaire.findFirst({
+    where: { isTemplate: true, templateName: name, id: { not: templateId } },
+  });
+  if (duplicated) throw new ApiError(409, "已存在同名模板");
+
+  const updated = await prisma.questionnaire.update({
+    where: { id: templateId },
+    data: { templateName: name },
+  });
+  const tree = await loadDbTree(updated.id);
+  const dto = treeToDto(updated.id, null, tree);
+  return {
+    id: updated.id,
+    templateName: name,
+    dimensionCount: dto.dimensionCount,
+    questionCount: dto.questionCount,
+    createdById: updated.createdById,
+    createdAt: updated.createdAt.toISOString(),
+  };
+}
+
+/** 删除模板：仅创建者或系统管理员。模板是深拷贝的独立数据，删除不影响任何项目问卷 */
+export async function deleteTemplate(
+  templateId: string,
+  user: User,
+): Promise<void> {
+  await requireTemplateManager(templateId, user);
+  // 级联删除该模板的维度与题目（Dimension/Question onDelete: Cascade）
+  await prisma.questionnaire.delete({ where: { id: templateId } });
+}
+
+async function assertTemplate(templateId: string) {
   const template = await prisma.questionnaire.findUnique({
     where: { id: templateId },
   });
   if (!template || !template.isTemplate) {
     throw new ApiError(404, "问卷模板不存在");
   }
-  const tree = await loadDbTree(template.id);
-  await replaceProjectQuestionnaire(projectId, tree);
-  return (await getProjectQuestionnaire(projectId, user))!;
+  return template;
+}
+
+/**
+ * 模板管理权限：创建者本人或系统管理员。
+ * 早期模板没有 createdById（迁移前创建），此时只有系统管理员可改名/删除，避免误删他人模板。
+ */
+async function requireTemplateManager(
+  templateId: string,
+  user: User,
+): Promise<void> {
+  const template = await assertTemplate(templateId);
+  if (user.systemRole === "SYSTEM_ADMIN") return;
+  if (template.createdById && template.createdById === user.id) return;
+  throw new ApiError(403, "只有模板创建者或系统管理员可以修改模板");
 }

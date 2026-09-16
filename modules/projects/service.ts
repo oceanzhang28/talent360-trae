@@ -9,6 +9,9 @@ import {
   requireProjectAdmin,
   requireSystemAdmin,
 } from "@/lib/permissions";
+import { writeAudit } from "@/modules/audit/service";
+import { buildAndPersistSnapshots } from "@/modules/results/snapshot";
+import { ScoringStructureError } from "@/modules/scoring";
 
 /**
  * 项目管理服务（PRD 第 6 节 / 技术文档第 16、39 节）。
@@ -452,24 +455,62 @@ export async function closeProject(
   return serializeProject(updated);
 }
 
-/** 冻结（CLOSED → FROZEN）：形成正式结果；评分快照在 Sprint 8 补充 */
+/**
+ * 冻结（CLOSED → FROZEN，技术文档第 35 节 / PRD 第 36~37 节）：
+ * 允许未 100% 完成冻结（完成度随快照保存并在审计中标记完整性不足）；
+ * 事务内：执行评分引擎 → 生成 ResultSnapshot/ResultDimension/ResultQuestion（整体替换旧快照）
+ * → status=FROZEN → AuditLog。冻结后报告只读快照，业务表变化不影响结果。
+ */
 export async function freezeProject(
   projectId: string,
   user: User,
 ): Promise<ProjectDTO> {
   const project = await requireProjectAdmin(projectId, user);
-  if (project.status !== "CLOSED") {
+  const synced = await syncStatus(project);
+  if (synced.status !== "CLOSED") {
     throw new ApiError(409, "只有已截止的项目可以冻结");
   }
-  // TODO(Sprint 8): 冻结时生成评分快照（正式结果固定）
-  const updated = await prisma.project.update({
-    where: { id: projectId },
-    data: { status: "FROZEN", frozenAt: new Date(), frozenBy: user.id },
+
+  const { project: updated } = await prisma.$transaction(async (tx) => {
+    let summary: Awaited<ReturnType<typeof buildAndPersistSnapshots>>;
+    try {
+      summary = await buildAndPersistSnapshots(tx, synced);
+    } catch (err) {
+      if (err instanceof ScoringStructureError) {
+        throw new ApiError(500, `问卷结构异常，无法计算评分：${err.message}`);
+      }
+      throw err;
+    }
+    const project = await tx.project.update({
+      where: { id: projectId },
+      data: { status: "FROZEN", frozenAt: new Date(), frozenBy: user.id },
+    });
+    await writeAudit(
+      {
+        actorUserId: user.id,
+        projectId,
+        action: "FREEZE_PROJECT",
+        entityType: "Project",
+        entityId: projectId,
+        metadata: {
+          snapshotCount: summary.snapshotCount,
+          expected: summary.expected,
+          submitted: summary.submitted,
+          incomplete: summary.submitted < summary.expected,
+          relations: summary.relations,
+        },
+      },
+      tx,
+    );
+    return { project, summary };
   });
   return serializeProject(updated);
 }
 
-/** 解冻（FROZEN → CLOSED）：仅系统管理员（PRD 6.3） */
+/**
+ * 解冻（FROZEN → CLOSED）：仅系统管理员（PRD 6.3 / 第 37 节）。
+ * 快照随解冻删除（结果只在 FROZEN/ARCHIVED 状态存在），重新冻结时整体重算。
+ */
 export async function unfreezeProject(
   projectId: string,
   user: User,
@@ -479,9 +520,24 @@ export async function unfreezeProject(
   if (project.status !== "FROZEN") {
     throw new ApiError(409, "只有已冻结的项目可以解冻");
   }
-  const updated = await prisma.project.update({
-    where: { id: projectId },
-    data: { status: "CLOSED", frozenAt: null, frozenBy: null },
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.resultSnapshot.deleteMany({ where: { projectId } });
+    const project = await tx.project.update({
+      where: { id: projectId },
+      data: { status: "CLOSED", frozenAt: null, frozenBy: null },
+    });
+    await writeAudit(
+      {
+        actorUserId: user.id,
+        projectId,
+        action: "UNFREEZE_PROJECT",
+        entityType: "Project",
+        entityId: projectId,
+        metadata: { snapshotsRemoved: true },
+      },
+      tx,
+    );
+    return project;
   });
   return serializeProject(updated);
 }

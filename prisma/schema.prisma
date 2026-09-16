@@ -71,6 +71,7 @@ model Project {
   people        ProjectPerson[]
   relations     ReviewRelation[]
   tasks         ReviewTask[]
+  resultSnapshots ResultSnapshot[]
 }
 
 // 项目管理员（HR）：项目级权限，系统管理员天然拥有所有项目权限
@@ -261,6 +262,7 @@ model ProjectPerson {
   // 同一人可同时是被评人与评价人：两个自关联方向
   revieweeRelations ReviewRelation[] @relation("Reviewee")
   reviewerRelations ReviewRelation[] @relation("Reviewer")
+  resultSnapshots  ResultSnapshot[] @relation("ResultReviewee")
 
   @@unique([projectId, employeeNo])
   @@index([projectId])
@@ -321,4 +323,60 @@ model AuditLog {
 
   @@index([projectId])
   @@index([createdAt])
+}
+
+// 结果快照（技术文档第 22 节）：冻结项目时生成，报告只读此表。
+// 后续修改业务表不影响已冻结结果；重算仅在重新冻结时整体替换。
+// 得分存储 6 位小数（展示层固定 2 位），无得分（无有效关系/提交）为 null。
+model ResultSnapshot {
+  id               String    @id @default(cuid())
+  projectId        String
+  revieweePersonId String
+  totalScore       Decimal?  @db.Decimal(8, 6) // 360 总分（仅他评关系加权，铁律 7）
+  selfScore        Decimal?  @db.Decimal(8, 6)
+  managerScore     Decimal?  @db.Decimal(8, 6)
+  peerScore        Decimal?  @db.Decimal(8, 6)
+  subordinateScore Decimal?  @db.Decimal(8, 6)
+  expectedCount    Int // 应评价任务数（active 关系数）
+  submittedCount   Int // 已提交任务数
+  completionRate   Decimal?  @db.Decimal(8, 6) // submittedCount / expectedCount
+  createdAt        DateTime  @default(now())
+
+  project    Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reviewee   ProjectPerson     @relation("ResultReviewee", fields: [revieweePersonId], references: [id], onDelete: Cascade)
+  dimensions ResultDimension[]
+  questions  ResultQuestion[]
+
+  @@unique([projectId, revieweePersonId])
+  @@index([projectId])
+}
+
+// 维度得分快照（技术文档第 23 节）：一级/二级维度 × 关系。
+// 只落有得分的行（可见但无有效数据的不存，读取时按问卷结构补 null 展示）。
+model ResultDimension {
+  id               String       @id @default(cuid())
+  resultSnapshotId String
+  dimensionId      String
+  relationType     RelationType
+  score            Decimal      @db.Decimal(8, 6)
+
+  snapshot ResultSnapshot @relation(fields: [resultSnapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([resultSnapshotId, dimensionId, relationType])
+  @@index([resultSnapshotId])
+}
+
+// 题目得分快照（技术文档第 24 节）：RATING 题平均分 × 关系。
+// TEXT 题不参与计分不落快照，原文在评价人实名明细（SubmissionAnswer）查看。
+model ResultQuestion {
+  id               String       @id @default(cuid())
+  resultSnapshotId String
+  questionId       String
+  relationType     RelationType
+  score            Decimal      @db.Decimal(8, 6)
+
+  snapshot ResultSnapshot @relation(fields: [resultSnapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([resultSnapshotId, questionId, relationType])
+  @@index([resultSnapshotId])
 }

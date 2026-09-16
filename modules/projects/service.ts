@@ -116,7 +116,7 @@ export function weightsSumTo100(
 }
 
 /** 惰性状态同步：PUBLISHED 过开始时间 → ACTIVE；ACTIVE 过截止 → CLOSED */
-async function syncStatus<T extends Project>(project: T): Promise<T> {
+export async function syncStatus<T extends Project>(project: T): Promise<T> {
   const now = Date.now();
   let next: Project["status"] | null = null;
   if (
@@ -391,7 +391,7 @@ export async function updateProject(
   return serializeProject(updated);
 }
 
-/** 发布（DRAFT → PUBLISHED）：校验时间与权重；问卷/评价关系校验在 Sprint 3/4 补充 */
+/** 发布（DRAFT → PUBLISHED）：校验时间、权重与问卷已配置；评价关系校验在 Sprint 4 补充 */
 export async function publishProject(
   projectId: string,
   user: User,
@@ -415,7 +415,16 @@ export async function publishProject(
   ) {
     throw new ApiError(400, "关系权重合计必须等于 100%");
   }
-  // TODO(Sprint 3): 校验问卷已配置（至少一个维度和题目）
+  // 校验问卷已配置（至少一个维度和一道题目，PRD 第 12 节）
+  const dimensionCount = await prisma.dimension.count({
+    where: { questionnaire: { projectId } },
+  });
+  const questionCount = await prisma.question.count({
+    where: { dimension: { questionnaire: { projectId } } },
+  });
+  if (dimensionCount === 0 || questionCount === 0) {
+    throw new ApiError(400, "发布前必须先导入问卷（至少一个维度和一道题目）");
+  }
   // TODO(Sprint 4): 校验被评人与评价关系已配置
   const now = Date.now();
   const status = project.startAt.getTime() <= now ? "ACTIVE" : "PUBLISHED";

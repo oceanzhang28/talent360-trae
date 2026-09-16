@@ -60,7 +60,13 @@ export async function requireProjectAdmin(
 
 function apiErrorToResponse(err: unknown): Response {
   if (err instanceof ApiError) {
-    return Response.json({ error: err.message }, { status: err.status });
+    return Response.json(
+      {
+        error: err.message,
+        ...(err.details !== undefined ? { details: err.details } : {}),
+      },
+      { status: err.status },
+    );
   }
   // 注意：不打印请求体、token 等敏感内容（AGENTS 铁律 10）
   console.error(

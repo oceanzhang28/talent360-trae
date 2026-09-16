@@ -17,6 +17,8 @@ import {
   updateProject,
   updateScaleLabels,
 } from "@/modules/projects/service";
+import { importQuestionnaire } from "@/modules/questionnaires/service";
+import { generateQuestionnaireTemplate } from "@/modules/questionnaires/excel";
 
 /**
  * Sprint 2 集成测试：项目状态机 / 权限 / 发布校验 / 时间操作 / 管理员 / 档位 / 软删除。
@@ -36,6 +38,15 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
   const iso = (offsetMs: number) =>
     new Date(Date.now() + offsetMs).toISOString();
   const HOUR = 60 * 60 * 1000;
+
+  /** Sprint 3 起发布前必须配置问卷：导入官方模板（含可通过校验的示例） */
+  async function withQuestionnaire(projectId: string, user: User) {
+    await importQuestionnaire(
+      projectId,
+      user,
+      await generateQuestionnaireTemplate(),
+    );
+  }
 
   async function expectApiError(fn: () => Promise<unknown>, status: number) {
     try {
@@ -159,6 +170,7 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
       startAt: iso(1 * HOUR), // 未来开始
       endAt: iso(48 * HOUR),
     });
+    await withQuestionnaire(ok.id, hr1);
     const published = await publishProject(ok.id, hr1);
     expect(published.status).toBe("PUBLISHED");
 
@@ -172,6 +184,7 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
       startAt: iso(-2 * HOUR), // 已过开始时间
       endAt: iso(48 * HOUR),
     });
+    await withQuestionnaire(project.id, hr1);
     const published = await publishProject(project.id, hr1);
     expect(published.status).toBe("ACTIVE"); // 发布时已过开始时间直接 ACTIVE
 
@@ -180,6 +193,7 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
       startAt: iso(-2 * HOUR),
       endAt: iso(-1 * HOUR), // 已过截止时间
     });
+    await withQuestionnaire(endingSoon.id, hr1);
     await publishProject(endingSoon.id, hr1);
     const afterSync = await getProject(endingSoon.id, hr1);
     expect(afterSync.project.status).toBe("CLOSED");
@@ -191,6 +205,7 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
       startAt: iso(-1 * HOUR),
       endAt: iso(48 * HOUR),
     });
+    await withQuestionnaire(project.id, hr1);
     await publishProject(project.id, hr1);
 
     // ACTIVE 下改名称 → 409（只能改 endAt）
@@ -238,6 +253,7 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
       startAt: iso(-2 * HOUR),
       endAt: iso(-1 * HOUR),
     });
+    await withQuestionnaire(project.id, hr1);
     await publishProject(project.id, hr1);
     expect((await getProject(project.id, hr1)).project.status).toBe("CLOSED");
 

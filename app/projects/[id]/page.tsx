@@ -4,10 +4,12 @@ import { Badge } from "@/components/ui/badge";
 import { getCurrentUser } from "@/modules/auth/service";
 import { ApiError } from "@/lib/permissions";
 import { getProject } from "@/modules/projects/service";
+import { getProjectQuestionnaire } from "@/modules/questionnaires/service";
 import { STATUS_BADGE, STATUS_LABEL } from "@/modules/projects/status";
 import { AdminsManager } from "./admins-manager";
 import { LifecycleActions } from "./lifecycle-actions";
 import { ProjectEditForm } from "./project-edit-form";
+import { QuestionnaireCard } from "./questionnaire-card";
 import { ScalesEditor } from "./scales-editor";
 
 export const metadata = {
@@ -36,6 +38,7 @@ export default async function ProjectDetailPage({
   }
 
   const { project, admins, scales } = data;
+  const questionnaire = await getProjectQuestionnaire(id, user);
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-3xl space-y-4 p-6">
@@ -59,6 +62,14 @@ export default async function ProjectDetailPage({
         isSystemAdmin={user.systemRole === "SYSTEM_ADMIN"}
       />
       <ProjectEditForm project={project} />
+      <QuestionnaireCard
+        projectId={project.id}
+        questionnaire={questionnaire}
+        editable={
+          (project.status === "DRAFT" || project.status === "PUBLISHED") &&
+          !questionnaire?.lockedAt
+        }
+      />
       <ScalesEditor
         projectId={project.id}
         scales={scales}

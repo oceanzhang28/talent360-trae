@@ -65,6 +65,26 @@ test("HR 新建项目 → 配置 → 发布成功", async ({ page }) => {
   await page.getByRole("button", { name: "保存档位说明" }).click();
   await expect(firstScaleInput).toHaveValue("完全没有体现");
 
+  // 导入问卷（Sprint 3 起发布的前置条件）：下载官方模板并经 API 导入
+  const templateRes = await page.request.get(
+    `/api/projects/${projectId}/questionnaire/template`,
+  );
+  expect(templateRes.ok()).toBeTruthy();
+  const importRes = await page.request.post(
+    `/api/projects/${projectId}/questionnaire/import`,
+    {
+      multipart: {
+        file: {
+          name: "template.xlsx",
+          mimeType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          buffer: Buffer.from(await templateRes.body()),
+        },
+      },
+    },
+  );
+  expect(importRes.ok()).toBeTruthy();
+
   // 发布
   await page.getByRole("button", { name: "发布项目" }).click();
   await expect(page.getByText("已发布", { exact: true })).toBeVisible();

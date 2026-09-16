@@ -6,6 +6,8 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /** 可选结构化明细（如 Excel 导入的逐行错误报告），随响应 JSON 一起返回 */
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";

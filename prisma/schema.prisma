@@ -25,6 +25,12 @@ enum ProjectStatus {
   DELETED // 软删除：deletedAt + purgeAfter（+30 天）
 }
 
+// 题型（技术文档第 15 节）：RATING 固定 10 档量表必答；TEXT 开放题可配置必填/选填
+enum QuestionType {
+  RATING
+  TEXT
+}
+
 // 系统登录用户（身份匹配见技术文档第 7 节：飞书 OAuth -> employeeNo）
 model User {
   id            String         @id @default(cuid())
@@ -62,6 +68,7 @@ model Project {
 
   admins ProjectAdmin[]
   scales ProjectScale[]
+  questionnaire Questionnaire?
 
   @@index([status])
 }
@@ -91,4 +98,68 @@ model ProjectScale {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, value])
+}
+
+// 问卷（技术文档第 13 节）：projectId 为空 = 模板；首次正式提交后 lockedAt 锁定禁止修改
+model Questionnaire {
+  id           String    @id @default(cuid())
+  projectId    String?   @unique
+  templateName String?
+  isTemplate   Boolean   @default(false)
+  lockedAt     DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  project     Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  dimensions  Dimension[]
+
+  @@index([isTemplate])
+}
+
+// 维度（技术文档第 14 节）：树状最大两级；parentId 为空 = 一级维度
+// 同一一级维度不能同时直接挂题目和二级维度（避免评分歧义，service 层校验）
+model Dimension {
+  id              String  @id @default(cuid())
+  questionnaireId String
+  parentId        String?
+  name            String
+  description     String? @db.Text
+  weight          Decimal @default(0) @db.Decimal(5, 2)
+  order           Int     @default(0)
+  // 关系适用规则（PRD 第 11 节）：维度级默认，题目级可 override
+  applicableSelf        Boolean @default(true)
+  applicableManager     Boolean @default(true)
+  applicablePeer        Boolean @default(true)
+  applicableSubordinate Boolean @default(true)
+
+  questionnaire Questionnaire @relation(fields: [questionnaireId], references: [id], onDelete: Cascade)
+  parent        Dimension?    @relation("DimensionTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children      Dimension[]   @relation("DimensionTree")
+  questions     Question[]
+
+  @@index([questionnaireId])
+  @@index([parentId])
+}
+
+// 题目（技术文档第 15 节）：RATING 固定 10 档必答；TEXT 开放题 weight=null、可配置必填/选填
+model Question {
+  id                    String       @id @default(cuid())
+  dimensionId           String
+  type                  QuestionType
+  code                  String
+  title                 String       @db.Text
+  description           String?      @db.Text
+  weight                Decimal?     @db.Decimal(5, 2)
+  required              Boolean      @default(true)
+  order                 Int          @default(0)
+  overrideRelationRules Boolean      @default(false)
+  applicableSelf        Boolean      @default(true)
+  applicableManager     Boolean      @default(true)
+  applicablePeer        Boolean      @default(true)
+  applicableSubordinate Boolean      @default(true)
+
+  dimension Dimension @relation(fields: [dimensionId], references: [id], onDelete: Cascade)
+
+  @@unique([dimensionId, code])
+  @@index([dimensionId])
 }

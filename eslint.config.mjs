@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Vitest coverage 产物
     "coverage/**",
+    // Playwright 产物（含打包后的 JS，无需 lint）
+    "test-results/**",
+    "playwright-report/**",
   ]),
 ]);
 

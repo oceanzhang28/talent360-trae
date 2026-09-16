@@ -10,7 +10,7 @@ export const metadata = {
   title: "结果后台 · Talent 360",
 };
 
-/** HR 结果后台（PRD 第 38 节）：被评人列表，只读冻结快照 */
+/** HR 结果后台（PRD 第 38 节）：被评人列表；未冻结时为实时计分，冻结后为只读快照 */
 export default async function ResultsPage({
   params,
 }: {
@@ -38,9 +38,7 @@ export default async function ResultsPage({
         <div>
           <h1 className="text-xl font-bold">结果后台</h1>
           <p className="text-muted-foreground text-sm">
-            {results.frozen
-              ? `${results.overall.submitted}/${results.overall.expected} 份评价已计入（${(results.overall.rate ?? 0) * 100 > 0 ? ((results.overall.rate ?? 0) * 100).toFixed(2) : "0.00"}%）`
-              : "正式结果尚未生成"}
+            {`${results.overall.submitted}/${results.overall.expected} 份评价${results.frozen ? "已计入" : "已提交"}（${((results.overall.rate ?? 0) * 100).toFixed(2)}%）${results.frozen ? "" : " · 实时"}`}
           </p>
         </div>
         <Link
@@ -55,13 +53,18 @@ export default async function ResultsPage({
         <div className="flex justify-end">
           <ExportButton projectId={id} />
         </div>
+      ) : results.reviewees.length > 0 ? (
+        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          当前为<b>实时数据</b>（基于已提交评价动态计算，未锁定显示）；
+          冻结后将固化为正式快照，导出版本以冻结后为准。
+        </div>
       ) : null}
 
-      {!results.frozen ? (
+      {results.reviewees.length === 0 ? (
         <div className="rounded-md border p-6 text-center">
-          <p className="font-medium">项目未冻结，暂无正式结果</p>
+          <p className="font-medium">暂无已提交结果</p>
           <p className="text-muted-foreground mt-1 text-sm">
-            请先在进度看板确认数据并冻结（PRD 第 37 节）
+            评价人提交后即可在此查看实时结果，冻结后固化为正式快照
           </p>
           <Link
             href={`/projects/${id}/progress`}
@@ -71,7 +74,11 @@ export default async function ResultsPage({
           </Link>
         </div>
       ) : (
-        <ResultsTable projectId={id} reviewees={results.reviewees} />
+        <ResultsTable
+          projectId={id}
+          reviewees={results.reviewees}
+          frozen={results.frozen}
+        />
       )}
     </main>
   );

@@ -95,21 +95,19 @@ export default async function ProjectDetailPage({
         <CardHeader>
           <CardTitle>进度与结果</CardTitle>
           <CardDescription>
-            进度看板（催办 + 冻结入口）
+            进度看板（催办 + 冻结入口）；结果后台
             {project.status === "FROZEN" || project.status === "ARCHIVED"
-              ? "；结果后台（只读冻结快照）"
-              : ""}
+              ? "（只读冻结快照）"
+              : "（实时，仅统计已提交评价）"}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
           <Button asChild variant="outline" size="sm">
             <Link href={`/projects/${project.id}/progress`}>进度看板</Link>
           </Button>
-          {(project.status === "FROZEN" || project.status === "ARCHIVED") && (
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/projects/${project.id}/results`}>结果后台</Link>
-            </Button>
-          )}
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/projects/${project.id}/results`}>结果后台</Link>
+          </Button>
         </CardContent>
       </Card>
       <ScalesEditor

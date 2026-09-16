@@ -1,4 +1,8 @@
-import type { Project } from "@/app/generated/prisma/client";
+import type {
+  Dimension,
+  Project,
+  Question,
+} from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { ApiError } from "@/lib/permissions";
 import {
@@ -109,6 +113,124 @@ export function toSnapshotDraft(
   };
 }
 
+// ---------- 实时计分（供「过程中查看已提交结果」与冻结快照共用，保证得分一致） ----------
+// 逻辑来源：技术文档第 35 节。冻结时调用后落库（整体替换），未冻结时仅计算不落库。
+// 这两处唯一的得分口径，避免实时与快照两套逻辑漂移。
+
+export type AggReviewee = {
+  personId: string;
+  employeeNo: string;
+  relationTypes: ScoringRelation[];
+  statuses: Array<"NOT_STARTED" | "IN_PROGRESS" | "SUBMITTED" | "RETURNED">;
+  submissions: ScoringSubmission[];
+};
+
+/** 问卷结构（维度/题目）→ 评分引擎输入（纯映射） */
+export function toScoringData(
+  dimensions: Dimension[],
+  questions: Question[],
+): { dimensions: ScoringDimension[]; questions: ScoringQuestion[] } {
+  return {
+    dimensions: dimensions.map((d) => ({
+      id: d.id,
+      parentId: d.parentId,
+      weight: d.weight,
+      applicableSelf: d.applicableSelf,
+      applicableManager: d.applicableManager,
+      applicablePeer: d.applicablePeer,
+      applicableSubordinate: d.applicableSubordinate,
+    })),
+    questions: questions.map((q) => ({
+      id: q.id,
+      dimensionId: q.dimensionId,
+      weight: q.weight,
+      overrideRelationRules: q.overrideRelationRules,
+      applicableSelf: q.applicableSelf,
+      applicableManager: q.applicableManager,
+      applicablePeer: q.applicablePeer,
+      applicableSubordinate: q.applicableSubordinate,
+    })),
+  };
+}
+
+type AggRelationRow = {
+  relationType: ScoringRelation;
+  reviewee: { id: string; employeeNo: string };
+  tasks: Array<{
+    status: string;
+    submissions: Array<{
+      answers: Array<{ questionId: string; score: Decimal.Value | null }>;
+    }>;
+  }>;
+};
+
+/** 有效评价关系 → 按被评人聚合（提取当前有效提交，供评分引擎） */
+export function aggregateReviewees(
+  relations: AggRelationRow[],
+): Map<string, AggReviewee> {
+  const byReviewee = new Map<string, AggReviewee>();
+  for (const rel of relations) {
+    const entry = byReviewee.get(rel.reviewee.id) ?? {
+      personId: rel.reviewee.id,
+      employeeNo: rel.reviewee.employeeNo,
+      relationTypes: [],
+      statuses: [],
+      submissions: [],
+    };
+    const task = rel.tasks[0];
+    entry.relationTypes.push(rel.relationType);
+    entry.statuses.push(
+      (task?.status ?? "NOT_STARTED") as AggReviewee["statuses"][number],
+    );
+    const submission = task?.submissions[0];
+    if (submission) {
+      const scores: Record<string, Decimal.Value> = {};
+      for (const a of submission.answers) {
+        if (a.score !== null) scores[a.questionId] = a.score;
+      }
+      entry.submissions.push({ relationType: rel.relationType, scores });
+    }
+    byReviewee.set(rel.reviewee.id, entry);
+  }
+  return byReviewee;
+}
+
+/**
+ * 对各被评人执行评分引擎 + 完成率，生成快照草稿（只读，不落库）。
+ * 按工号稳定排序；被评人也出现在最终导出顺序依赖此处返回顺序。
+ */
+export function computeDrafts(
+  project: Pick<Project, "managerWeight" | "peerWeight" | "subordinateWeight">,
+  scoring: { dimensions: ScoringDimension[]; questions: ScoringQuestion[] },
+  byReviewee: Map<string, AggReviewee>,
+): SnapshotDraft[] {
+  const revieweeIds = Array.from(byReviewee.keys()).sort((a, b) =>
+    (byReviewee.get(a)?.employeeNo ?? "").localeCompare(
+      byReviewee.get(b)?.employeeNo ?? "",
+    ),
+  );
+  return revieweeIds.map((personId) => {
+    const entry = byReviewee.get(personId)!;
+    const result = computeScores({
+      dimensions: scoring.dimensions,
+      questions: scoring.questions,
+      submissions: entry.submissions,
+      weights: {
+        manager: project.managerWeight,
+        peer: project.peerWeight,
+        subordinate: project.subordinateWeight,
+      },
+    });
+    const completion = computeCompletion(
+      entry.relationTypes.map((relationType, i) => ({
+        relationType,
+        status: entry.statuses[i],
+      })),
+    );
+    return toSnapshotDraft(personId, result, completion);
+  });
+}
+
 export type FreezeSummary = {
   snapshotCount: number;
   expected: number;
@@ -180,67 +302,13 @@ export async function buildAndPersistSnapshots(
     applicableSubordinate: q.applicableSubordinate,
   }));
 
-  // 按被评人分组（有效关系 + 任务状态 + 当前有效提交）
-  const byReviewee = new Map<
-    string,
-    {
-      employeeNo: string;
-      relationTypes: ScoringRelation[];
-      statuses: string[];
-      submissions: ScoringSubmission[];
-    }
-  >();
-  for (const rel of relations) {
-    const entry = byReviewee.get(rel.reviewee.id) ?? {
-      employeeNo: rel.reviewee.employeeNo,
-      relationTypes: [],
-      statuses: [],
-      submissions: [],
-    };
-    const task = rel.tasks[0];
-    entry.relationTypes.push(rel.relationType);
-    entry.statuses.push(task?.status ?? "NOT_STARTED");
-    const submission = task?.submissions[0];
-    if (submission) {
-      const scores: Record<string, Decimal.Value> = {};
-      for (const a of submission.answers) {
-        if (a.score !== null) scores[a.questionId] = a.score;
-      }
-      entry.submissions.push({ relationType: rel.relationType, scores });
-    }
-    byReviewee.set(rel.reviewee.id, entry);
-  }
-
-  // 逐个被评人执行评分引擎 + 完成率，生成快照草稿（按工号稳定排序）
-  const drafts: SnapshotDraft[] = [];
-  const revieweeIds = Array.from(byReviewee.keys());
-  const revieweeNoById = new Map(
-    Array.from(byReviewee.entries()).map(([id, e]) => [id, e.employeeNo]),
+  // 按被评人聚合有效关系 + 当前有效提交，随后与「过程中的实时计分」走同一 computeDrafts
+  const byReviewee = aggregateReviewees(relations);
+  const drafts = computeDrafts(
+    project,
+    { dimensions: scoringDimensions, questions: scoringQuestions },
+    byReviewee,
   );
-  revieweeIds.sort((a, b) =>
-    (revieweeNoById.get(a) ?? "").localeCompare(revieweeNoById.get(b) ?? ""),
-  );
-  for (const personId of revieweeIds) {
-    const entry = byReviewee.get(personId)!;
-    const result = computeScores({
-      dimensions: scoringDimensions,
-      questions: scoringQuestions,
-      submissions: entry.submissions,
-      weights: {
-        manager: project.managerWeight,
-        peer: project.peerWeight,
-        subordinate: project.subordinateWeight,
-      },
-    });
-    const completion = computeCompletion(
-      entry.relationTypes.map((relationType, i) => ({
-        relationType,
-        status: entry.statuses[i] as
-          "NOT_STARTED" | "IN_PROGRESS" | "SUBMITTED" | "RETURNED",
-      })),
-    );
-    drafts.push(toSnapshotDraft(personId, result, completion));
-  }
 
   // 整体替换：先删旧快照（级联删维度/题目行），再批量写入
   await tx.resultSnapshot.deleteMany({ where: { projectId: project.id } });

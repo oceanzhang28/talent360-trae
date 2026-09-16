@@ -32,7 +32,9 @@ async function api(path, { method = "GET", data } = {}) {
 
 function fmt(v) {
   if (v instanceof Date) return v.toISOString().slice(0, 10);
-  return typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "");
+  return typeof v === "object" && v !== null
+    ? JSON.stringify(v)
+    : String(v ?? "");
 }
 
 (async () => {
@@ -77,7 +79,9 @@ function fmt(v) {
     // 抽查：第一数据行 + 最后一数据行
     for (const idx of [1, rows.length - 1]) {
       if (idx >= rows.length) continue;
-      console.log(`  行${idx + 1}: ${cellsOf(rows[idx]).slice(0, 10).join(" | ")}`);
+      console.log(
+        `  行${idx + 1}: ${cellsOf(rows[idx]).slice(0, 10).join(" | ")}`,
+      );
     }
   }
 })().catch((e) => {

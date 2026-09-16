@@ -201,7 +201,9 @@ test("进度看板 → 冻结 → 结果后台 → 下钻 → 实名明细 → �
   // --- 下钻：得分卡片 + 维度树 + 实名明细 ---
   await zhangsanRow.getByRole("link", { name: "查看下钻" }).click();
   await page.waitForURL(/\/results\/[^/]+$/);
-  await expect(page.getByText("张三 的测评结果")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "张三 的测评结果" }),
+  ).toBeVisible();
   await expect(
     page.getByText("结果完整性不足：应评 4 份，实际 3 份"),
   ).toBeVisible();

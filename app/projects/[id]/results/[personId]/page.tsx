@@ -201,6 +201,16 @@ export default async function ResultDetailPage({
         ))}
       </div>
 
+      {!detail.frozen && (
+        <p
+          className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+          role="alert"
+        >
+          当前为<b>实时数据</b>
+          （基于已提交评价动态计算，未锁定）；冻结后固化为正式快照
+        </p>
+      )}
+
       {reviewee.submittedCount < reviewee.expectedCount && (
         <p
           className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/table";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser } from "@/modules/auth/service";
+import { PeopleTools, PersonRowEditor } from "./people-manager";
 import { RoleToggle } from "./role-toggle";
 
 export const metadata = {
@@ -42,12 +43,12 @@ export default async function AdminUsersPage() {
           返回首页
         </Link>
       </div>
+      <PeopleTools />
       <Card>
         <CardHeader>
           <CardTitle>系统用户（{users.length}）</CardTitle>
           <CardDescription>
-            系统管理员可设置/取消 SYSTEM_ADMIN；HR
-            项目管理员在项目配置中管理（Sprint 2）
+            系统管理员可设置/取消系统管理员角色，并可编辑人员基础信息（姓名/部门/岗位/职级）
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -56,8 +57,10 @@ export default async function AdminUsersPage() {
               <TableRow>
                 <TableHead>工号</TableHead>
                 <TableHead>姓名</TableHead>
+                <TableHead>部门</TableHead>
+                <TableHead>岗位</TableHead>
+                <TableHead>职级</TableHead>
                 <TableHead>飞书绑定</TableHead>
-                <TableHead>最近登录</TableHead>
                 <TableHead>角色</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
@@ -69,18 +72,17 @@ export default async function AdminUsersPage() {
                     {u.employeeNo ?? "-"}
                   </TableCell>
                   <TableCell>{u.name}</TableCell>
+                  <TableCell>{u.department ?? "-"}</TableCell>
+                  <TableCell>{u.position ?? "-"}</TableCell>
+                  <TableCell>{u.grade ?? "-"}</TableCell>
                   <TableCell>{u.feishuOpenId ? "已绑定" : "-"}</TableCell>
-                  <TableCell>
-                    {u.lastLoginAt
-                      ? new Date(u.lastLoginAt).toLocaleString("zh-CN")
-                      : "从未登录"}
-                  </TableCell>
                   <TableCell>
                     {u.systemRole === "SYSTEM_ADMIN"
                       ? "系统管理员"
                       : "普通用户"}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="relative text-right">
+                    <PersonRowEditor person={u} />
                     <RoleToggle
                       userId={u.id}
                       systemRole={u.systemRole}

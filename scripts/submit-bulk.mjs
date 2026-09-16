@@ -13,8 +13,12 @@ if (!PROJECT_ID) {
   console.error("需设置 PROJECT_ID");
   process.exit(1);
 }
-const SKIP = new Set((process.env.SKIP ?? "30010,30009").split(",").filter(Boolean));
-const BATCH = new Set((process.env.BATCH_NO ?? "30011").split(",").filter(Boolean));
+const SKIP = new Set(
+  (process.env.SKIP ?? "30010,30009").split(",").filter(Boolean),
+);
+const BATCH = new Set(
+  (process.env.BATCH_NO ?? "30011").split(",").filter(Boolean),
+);
 
 const RATING_CODES = null;
 let reviewerIdx = 0;
@@ -24,17 +28,28 @@ async function api(path, { method = "GET", data } = {}) {
   const headers = {};
   if (cookie) headers.cookie = cookie;
   if (data !== undefined) headers["content-type"] = "application/json";
-  const res = await fetch(BASE + path, { method, headers, body: data !== undefined ? JSON.stringify(data) : undefined });
+  const res = await fetch(BASE + path, {
+    method,
+    headers,
+    body: data !== undefined ? JSON.stringify(data) : undefined,
+  });
   const sc = res.headers.get("set-cookie");
   if (sc) cookie = sc.split(";")[0];
   const text = await res.text();
   let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
   return { status: res.status, ok: res.ok, json };
 }
 
 async function login(no, name) {
-  const r = await api("/api/auth/mock/login", { method: "POST", data: { employeeNo: no, name } });
+  const r = await api("/api/auth/mock/login", {
+    method: "POST",
+    data: { employeeNo: no, name },
+  });
   if (!r.ok) throw new Error(`登录 ${no} 失败 ${r.status}`);
 }
 
@@ -42,8 +57,10 @@ async function login(no, name) {
 async function myProjectTasks() {
   const r = await api("/api/my/tasks");
   if (!r.ok) throw new Error(`/api/my/tasks ${r.status}`);
-  const groups = (r.json.groups ?? []);
-  return groups.flatMap((g) => (g.tasks ?? []).filter((t) => t.project.id === PROJECT_ID));
+  const groups = r.json.groups ?? [];
+  return groups.flatMap((g) =>
+    (g.tasks ?? []).filter((t) => t.project.id === PROJECT_ID),
+  );
 }
 
 /** 读取一个任务的问卷结构并组装答案 */
@@ -63,8 +80,10 @@ async function buildAnswers(taskId) {
     } else {
       const qid = q.code ?? "";
       let textValue;
-      if (qid === "TEXT1") textValue = "值得肯定：交付质量高、响应及时、协作主动。";
-      else if (qid === "TEXT2") textValue = "建议：进一步加强跨部门沟通与信息同步。";
+      if (qid === "TEXT1")
+        textValue = "值得肯定：交付质量高、响应及时、协作主动。";
+      else if (qid === "TEXT2")
+        textValue = "建议：进一步加强跨部门沟通与信息同步。";
       else textValue = "是，具备培养为更高层级管理者的潜力。";
       answers.push({ questionId: q.id, textValue });
     }
@@ -74,10 +93,15 @@ async function buildAnswers(taskId) {
 
 async function fillAndSubmit(taskId) {
   const answers = await buildAnswers(taskId);
-  const d = await api(`/api/tasks/${taskId}/draft`, { method: "PUT", data: { answers } });
-  if (!d.ok) throw new Error(`draft ${taskId} ${d.status}: ${JSON.stringify(d.json)}`);
+  const d = await api(`/api/tasks/${taskId}/draft`, {
+    method: "PUT",
+    data: { answers },
+  });
+  if (!d.ok)
+    throw new Error(`draft ${taskId} ${d.status}: ${JSON.stringify(d.json)}`);
   const s = await api(`/api/tasks/${taskId}/submit`, { method: "POST" });
-  if (!s.ok) throw new Error(`submit ${taskId} ${s.status}: ${JSON.stringify(s.json)}`);
+  if (!s.ok)
+    throw new Error(`submit ${taskId} ${s.status}: ${JSON.stringify(s.json)}`);
   return s.json;
 }
 
@@ -106,7 +130,11 @@ async function fillAndSubmit(taskId) {
         await fillAndSubmit(t.taskId);
         results.ok++;
       } catch (e) {
-        results.failed.push({ no, reviewee: t.reviewee?.name, err: String(e.message ?? e) });
+        results.failed.push({
+          no,
+          reviewee: t.reviewee?.name,
+          err: String(e.message ?? e),
+        });
       }
     }
   }
@@ -118,13 +146,23 @@ async function fillAndSubmit(taskId) {
     const tasks = await myProjectTasks();
     const ids = [];
     for (const t of tasks) {
-      await api(`/api/tasks/${t.taskId}/draft`, { method: "PUT", data: { answers: await buildAnswers(t.taskId) } });
+      await api(`/api/tasks/${t.taskId}/draft`, {
+        method: "PUT",
+        data: { answers: await buildAnswers(t.taskId) },
+      });
       ids.push(t.taskId);
     }
-    const b = await api("/api/tasks/batch-submit", { method: "POST", data: { taskIds: ids } });
+    const b = await api("/api/tasks/batch-submit", {
+      method: "POST",
+      data: { taskIds: ids },
+    });
     results.ok += (b.json?.submitted ?? []).length;
-    if ((b.json?.skipped ?? []).length) results.failed.push({ no, batchSkipped: b.json.skipped });
+    if ((b.json?.skipped ?? []).length)
+      results.failed.push({ no, batchSkipped: b.json.skipped });
   }
 
   console.log("批量提交结果:", JSON.stringify(results, null, 2));
-})().catch((e) => { console.error("FATAL", e); process.exit(1); });
+})().catch((e) => {
+  console.error("FATAL", e);
+  process.exit(1);
+});

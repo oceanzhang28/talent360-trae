@@ -215,3 +215,21 @@
 - **结果合理**：5 名被评人 360 总分 ≈3.76、自评/上级/平级/下级 一致（保留权重 40/30/30 归一化）；题目级得分落到 3.5/3.75 等 0.5 网格，开放题原文保留。
 
 **MVP 完成后暂停开发，先跑真实测试；V1（拖拽编辑器、模板库、测试模式、图表、网页/PDF 报告、飞书多维表格同步等）待真实流程跑通后再立项。**
+
+## Sprint 10：过程看结果 + 人员初始化配置 + 界面中文化 ✅（2026-09-16 完成）
+
+真实测试反馈的三项改进：
+
+- [x] **需求 1：测评过程中即可查看已提交结果（不必先冻结）**
+  - [x] `modules/results/snapshot.ts` 抽出只读纯函数 `toScoringData` / `aggregateReviewees` / `computeDrafts`（冻结落库与实时计分共用同一得分口径，避免两套算法）
+  - [x] `modules/results/service.ts` 新增 `loadRealtimeScoring`；`listProjectResults` / `getResultDetail` 未冻结时走实时分支（`frozen=false`，仅统计已提交评价，不落库）；`listReviewerDetails` 移除未冻结 409 拦截
+  - [x] UI：结果后台/下钻页未冻结时显示「实时数据」提示条与「· 实时」标记；项目设置页「结果后台」入口常驻；进度看板新增「已提交结果（实时）」入口卡片
+  - [x] 冻结后仍读 ResultSnapshot（只读快照）；Excel 导出保持「仅冻结后」不变（导出即正式结果）
+- [x] **需求 2：人员初始化配置（全局人员主数据）**
+  - [x] `User` 增加 `department / position / grade`（migration `add_user_dept_position_grade`）
+  - [x] `POST /api/admin/users`（新增，工号唯一 409）、`PATCH /api/admin/users/:id`（改姓名/部门/岗位/职级 + 角色）、`POST /api/admin/users/bulk`（Excel 批量导入，模板列 工号/姓名/部门/岗位/职级，表内重复与已存在工号记错误并跳过）
+  - [x] 用户管理页：新增人员表单 + 批量导入 + 行内编辑 + 列表新增 部门/岗位/职级 列
+- [x] **需求 3：界面英文中文化**：根 layout 的 `title`/`description` 由 "Create Next App" 改为「人才盘点 360」/「360 度人才测评平台」，`lang` 改为 `zh-CN`；用户管理描述中的 `SYSTEM_ADMIN` 术语改为「系统管理员」
+
+**验收结果**：✅ 未冻结项目直接进入结果后台可见实时分数（张三 上级 4.00 → 总分 4.00 / 完成 1/4，无提交者显示「—」），冻结后读快照行为不变；用户管理可新增/编辑/批量导入人员并落库 部门/岗位/职级。新增集成测试 `tests/integration/admin-users.test.ts`（9 用例：新增 201/唯一 409/权限 403/编辑清空/禁改自己角色/列表新字段/批量导入错误行号/空文件 400）与 E2E `tests/e2e/sprint10.spec.ts`（2 用例 × 双工程），并更新 `results.test.ts` 未冻结用例为实时计分断言。全套 **205 vitest + 39 E2E** 通过，lint/typecheck/format 通过。
+

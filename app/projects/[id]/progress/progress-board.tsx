@@ -232,6 +232,25 @@ export function ProgressBoard({
         </Card>
       )}
 
+      {!["FROZEN", "ARCHIVED"].includes(project.status) &&
+        overall.submitted > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>已提交结果（实时）</CardTitle>
+              <CardDescription>
+                当前基于已提交评价动态计算，未锁定；冻结后固化为正式快照
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <Button asChild size="sm">
+                <Link href={`/projects/${projectId}/results`}>
+                  查看实时结果后台
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
       {(project.status === "FROZEN" || project.status === "ARCHIVED") && (
         <Card>
           <CardHeader>

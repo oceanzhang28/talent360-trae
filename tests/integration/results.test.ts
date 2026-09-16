@@ -270,16 +270,38 @@ describe.skipIf(!process.env.DATABASE_URL)(
 
     // ---------- 冻结前置校验 ----------
 
-    it("未冻结：结果列表 frozen=false 空数据；实名明细 409", async () => {
+    it("未冻结：结果列表实时计分（frozen=false，仅统计已提交）；实名明细可查", async () => {
       const results = await listProjectResults(projectId, hr);
       expect(results.frozen).toBe(false);
       expect(results.frozenAt).toBeNull();
-      expect(results.reviewees).toEqual([]);
+      // 已提交的 3 份立即体现：张三 total=(4×40+5×30)/70，李四无提交全空
+      expect(results.reviewees).toHaveLength(2);
+      const zs = results.reviewees[0]!;
+      expect(zs.employeeNo).toBe(ZHANGSAN_NO);
+      expect(zs.selfScore).toBeCloseTo(3, 6);
+      expect(zs.managerScore).toBeCloseTo(4, 6);
+      expect(zs.peerScore).toBeCloseTo(5, 6);
+      expect(zs.subordinateScore).toBeNull();
+      expect(zs.totalScore).toBeCloseTo(310 / 70, 5);
+      expect(zs.submittedCount).toBe(3);
+      expect(zs.expectedCount).toBe(4);
+      const ls = results.reviewees[1]!;
+      expect(ls.employeeNo).toBe(LISI_NO);
+      expect(ls.totalScore).toBeNull();
+      expect(ls.submittedCount).toBe(0);
 
-      await expectApiError(
-        () => listReviewerDetails(projectId, zhangsanPersonId, hr),
-        409,
+      // 实时下钻与实名明细在未冻结时同样可读（不再 409）
+      const detail = await getResultDetail(projectId, zs.personId, hr);
+      expect(detail.frozen).toBe(false);
+      expect(detail.relations.length).toBeGreaterThan(0);
+
+      const reviewers = await listReviewerDetails(
+        projectId,
+        zhangsanPersonId,
+        hr,
       );
+      expect(reviewers.reviewee.employeeNo).toBe(ZHANGSAN_NO);
+      expect(reviewers.reviewers.length).toBeGreaterThan(0);
     });
 
     it("非 CLOSED 项目冻结 409", async () => {

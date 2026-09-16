@@ -1,4 +1,10 @@
-import type { RelationType, User } from "@/app/generated/prisma/client";
+import type {
+  Dimension,
+  Project,
+  Question,
+  RelationType,
+  User,
+} from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { ApiError, requireProjectAdmin } from "@/lib/permissions";
 import { syncStatus } from "@/modules/projects/service";
@@ -7,6 +13,12 @@ import {
   type CompletionRate,
   type CompletionResult,
 } from "@/modules/scoring";
+import {
+  aggregateReviewees,
+  computeDrafts,
+  toScoringData,
+  type SnapshotDraft,
+} from "./snapshot";
 
 /**
  * 进度看板与结果后台服务（PRD 第 30、36~38 节 / 技术文档第 34~35 节）。
@@ -31,8 +43,73 @@ export const RELATION_ORDER: RelationType[] = [
   "SUBORDINATE",
 ];
 
-/** 结果数据可读状态：冻结后（含归档历史项目） */
+/** 结果数据可读状态：导出等仍限制冻结后（含归档历史项目） */
 const RESULT_STATUSES = new Set(["FROZEN", "ARCHIVED"]);
+
+// ---------- 实时计分数据加载（未冻结时「过程中查看已提交结果」） ----------
+
+type RealtimePerson = {
+  id: string;
+  employeeNo: string;
+  name: string;
+  department: string | null;
+  position: string | null;
+  grade: string | null;
+};
+
+/** 加载未冻结项目的结果原始数据并实时计分（只读，不落库，与冻结快照同口径） */
+async function loadRealtimeScoring(project: Project): Promise<{
+  dimensions: Dimension[];
+  questions: Question[];
+  drafts: SnapshotDraft[];
+  personById: Map<string, RealtimePerson>;
+}> {
+  const questionnaire = await prisma.questionnaire.findUnique({
+    where: { projectId: project.id },
+  });
+  if (!questionnaire) {
+    return { dimensions: [], questions: [], drafts: [], personById: new Map() };
+  }
+  const [dimensions, questions, relations, persons] = await Promise.all([
+    prisma.dimension.findMany({ where: { questionnaireId: questionnaire.id } }),
+    prisma.question.findMany({
+      where: { dimension: { questionnaireId: questionnaire.id } },
+    }),
+    prisma.reviewRelation.findMany({
+      where: { projectId: project.id, active: true },
+      include: {
+        reviewee: { select: { id: true, employeeNo: true } },
+        tasks: {
+          select: {
+            status: true,
+            submissions: {
+              where: { invalidatedAt: null },
+              select: {
+                answers: { select: { questionId: true, score: true } },
+              },
+            },
+          },
+        },
+      },
+    }),
+    prisma.projectPerson.findMany({
+      where: { projectId: project.id },
+      select: {
+        id: true,
+        employeeNo: true,
+        name: true,
+        department: true,
+        position: true,
+        grade: true,
+      },
+    }),
+  ]);
+  const scoring = toScoringData(dimensions, questions);
+  const byReviewee = aggregateReviewees(relations);
+  const drafts = computeDrafts(project, scoring, byReviewee);
+  const personById = new Map(persons.map((p) => [p.id, p]));
+  return { dimensions, questions, drafts, personById };
+}
 
 // ---------- 进度看板（PRD 第 30 节） ----------
 
@@ -283,18 +360,45 @@ export type ResultsListDTO = {
   reviewees: ResultRevieweeDTO[];
 };
 
-/** 被评人结果列表：只读 ResultSnapshot（未冻结返回空 + frozen=false，UI 引导先看进度） */
+/** 被评人结果列表：冻结读只读快照；未冻结对已提交评价实时计分（frozen=false） */
 export async function listProjectResults(
   projectId: string,
   user: User,
 ): Promise<ResultsListDTO> {
   const project = await requireProjectAdmin(projectId, user);
   if (!RESULT_STATUSES.has(project.status)) {
+    // 未冻结：对已提交任务实时计分（只读，不落库），UI 标注「实时数据」
+    const data = await loadRealtimeScoring(project);
+    const reviewees: ResultRevieweeDTO[] = data.drafts.map((d) => {
+      const p = data.personById.get(d.revieweePersonId);
+      return {
+        personId: d.revieweePersonId,
+        employeeNo: p?.employeeNo ?? "",
+        name: p?.name ?? "",
+        department: p?.department ?? null,
+        position: p?.position ?? null,
+        grade: p?.grade ?? null,
+        totalScore: dec(d.totalScore),
+        selfScore: dec(d.selfScore),
+        managerScore: dec(d.managerScore),
+        peerScore: dec(d.peerScore),
+        subordinateScore: dec(d.subordinateScore),
+        expectedCount: d.expectedCount,
+        submittedCount: d.submittedCount,
+        completionRate: dec(d.completionRate),
+      };
+    });
+    const expected = reviewees.reduce((acc, r) => acc + r.expectedCount, 0);
+    const submitted = reviewees.reduce((acc, r) => acc + r.submittedCount, 0);
     return {
       frozen: false,
       frozenAt: null,
-      overall: { expected: 0, submitted: 0, rate: null },
-      reviewees: [],
+      overall: {
+        expected,
+        submitted,
+        rate: expected === 0 ? null : submitted / expected,
+      },
+      reviewees,
     };
   }
   const snapshots = await prisma.resultSnapshot.findMany({
@@ -417,89 +521,29 @@ function dimensionVisible(
         : d.applicableSubordinate;
 }
 
-/** 单个被评人结果下钻：快照得分 + 问卷结构（问卷已锁定，读取名称/树/权重） */
-export async function getResultDetail(
-  projectId: string,
-  personId: string,
-  user: User,
-): Promise<ResultDetailDTO> {
-  const project = await requireProjectAdmin(projectId, user);
-  const snapshot = await prisma.resultSnapshot.findUnique({
-    where: {
-      projectId_revieweePersonId: { projectId, revieweePersonId: personId },
-    },
-    include: {
-      reviewee: {
-        select: {
-          id: true,
-          employeeNo: true,
-          name: true,
-          department: true,
-          position: true,
-          grade: true,
-        },
-      },
-    },
-  });
-  if (!snapshot) {
-    throw new ApiError(404, "该被评人没有结果快照（项目可能未冻结）");
-  }
-
-  const questionnaire = await prisma.questionnaire.findUnique({
-    where: { projectId },
-  });
-  if (!questionnaire) {
-    throw new ApiError(404, "项目问卷不存在");
-  }
-  const [dimensions, questions, dimRows, questionRows] = await Promise.all([
-    prisma.dimension.findMany({
-      where: { questionnaireId: questionnaire.id },
-      orderBy: { order: "asc" },
-    }),
-    prisma.question.findMany({
-      where: { dimension: { questionnaireId: questionnaire.id } },
-      orderBy: { order: "asc" },
-    }),
-    prisma.resultDimension.findMany({
-      where: { resultSnapshotId: snapshot.id },
-    }),
-    prisma.resultQuestion.findMany({
-      where: { resultSnapshotId: snapshot.id },
-    }),
-  ]);
-
-  const dimScore = new Map(
-    dimRows.map((r) => [`${r.relationType}|${r.dimensionId}`, dec(r.score)]),
-  );
-  const questionScore = new Map(
-    questionRows.map((r) => [
-      `${r.relationType}|${r.questionId}`,
-      dec(r.score),
-    ]),
-  );
-
-  const relationScore: Record<RelationType, number | null> = {
-    SELF: dec(snapshot.selfScore),
-    MANAGER: dec(snapshot.managerScore),
-    PEER: dec(snapshot.peerScore),
-    SUBORDINATE: dec(snapshot.subordinateScore),
-  };
-
-  const childrenByParent = new Map<string, typeof dimensions>();
+/** 组装某被评人的关系→维度树→题目得分（冻结快照与实时计分共用同一树形口径） */
+function buildResultRelations(
+  dimensions: Dimension[],
+  questions: Question[],
+  dimScore: Map<string, number | null>,
+  questionScore: Map<string, number | null>,
+  relationScore: Record<RelationType, number | null>,
+): ResultRelationDTO[] {
+  const childrenByParent = new Map<string, Dimension[]>();
   for (const d of dimensions) {
     if (d.parentId === null) continue;
     const list = childrenByParent.get(d.parentId) ?? [];
     list.push(d);
     childrenByParent.set(d.parentId, list);
   }
-  const questionsByDim = new Map<string, typeof questions>();
+  const questionsByDim = new Map<string, Question[]>();
   for (const q of questions) {
     const list = questionsByDim.get(q.dimensionId) ?? [];
     list.push(q);
     questionsByDim.set(q.dimensionId, list);
   }
 
-  const relations: ResultRelationDTO[] = RELATION_ORDER.map((relation) => ({
+  return RELATION_ORDER.map((relation) => ({
     relation,
     score: relationScore[relation],
     dimensions: dimensions
@@ -538,6 +582,133 @@ export async function getResultDetail(
           })),
       })),
   }));
+}
+
+/** 单个被评人结果下钻：快照得分（冻结）或实时计分（过程中） + 问卷结构 */
+export async function getResultDetail(
+  projectId: string,
+  personId: string,
+  user: User,
+): Promise<ResultDetailDTO> {
+  const project = await requireProjectAdmin(projectId, user);
+  const questionnaire = await prisma.questionnaire.findUnique({
+    where: { projectId },
+  });
+  if (!questionnaire) {
+    throw new ApiError(404, "项目问卷不存在");
+  }
+  const [dimensions, questions] = await Promise.all([
+    prisma.dimension.findMany({
+      where: { questionnaireId: questionnaire.id },
+      orderBy: { order: "asc" },
+    }),
+    prisma.question.findMany({
+      where: { dimension: { questionnaireId: questionnaire.id } },
+      orderBy: { order: "asc" },
+    }),
+  ]);
+
+  // 未冻结：实时计分下钻（只读，标注非锁定快照）
+  if (!RESULT_STATUSES.has(project.status)) {
+    const data = await loadRealtimeScoring(project);
+    const draft = data.drafts.find((d) => d.revieweePersonId === personId);
+    if (!draft) {
+      throw new ApiError(404, "该被评人暂无已提交结果");
+    }
+    const p = data.personById.get(personId);
+    const dimScore = new Map(
+      draft.dimensions.map((r) => [
+        `${r.relationType}|${r.dimensionId}`,
+        dec(r.score),
+      ]),
+    );
+    const questionScore = new Map(
+      draft.questions.map((r) => [
+        `${r.relationType}|${r.questionId}`,
+        dec(r.score),
+      ]),
+    );
+    const relationScore: Record<RelationType, number | null> = {
+      SELF: dec(draft.selfScore),
+      MANAGER: dec(draft.managerScore),
+      PEER: dec(draft.peerScore),
+      SUBORDINATE: dec(draft.subordinateScore),
+    };
+    return {
+      frozen: false,
+      frozenAt: null,
+      reviewee: {
+        personId,
+        employeeNo: p?.employeeNo ?? "",
+        name: p?.name ?? "",
+        department: p?.department ?? null,
+        position: p?.position ?? null,
+        grade: p?.grade ?? null,
+        totalScore: dec(draft.totalScore),
+        selfScore: dec(draft.selfScore),
+        managerScore: dec(draft.managerScore),
+        peerScore: dec(draft.peerScore),
+        subordinateScore: dec(draft.subordinateScore),
+        expectedCount: draft.expectedCount,
+        submittedCount: draft.submittedCount,
+        completionRate: dec(draft.completionRate),
+      },
+      relations: buildResultRelations(
+        dimensions,
+        questions,
+        dimScore,
+        questionScore,
+        relationScore,
+      ),
+    };
+  }
+
+  // 冻结：读只读快照
+  const snapshot = await prisma.resultSnapshot.findUnique({
+    where: {
+      projectId_revieweePersonId: { projectId, revieweePersonId: personId },
+    },
+    include: {
+      reviewee: {
+        select: {
+          id: true,
+          employeeNo: true,
+          name: true,
+          department: true,
+          position: true,
+          grade: true,
+        },
+      },
+    },
+  });
+  if (!snapshot) {
+    throw new ApiError(404, "该被评人没有结果快照");
+  }
+
+  const [dimRows, questionRows] = await Promise.all([
+    prisma.resultDimension.findMany({
+      where: { resultSnapshotId: snapshot.id },
+    }),
+    prisma.resultQuestion.findMany({
+      where: { resultSnapshotId: snapshot.id },
+    }),
+  ]);
+
+  const dimScore = new Map(
+    dimRows.map((r) => [`${r.relationType}|${r.dimensionId}`, dec(r.score)]),
+  );
+  const questionScore = new Map(
+    questionRows.map((r) => [
+      `${r.relationType}|${r.questionId}`,
+      dec(r.score),
+    ]),
+  );
+  const relationScore: Record<RelationType, number | null> = {
+    SELF: dec(snapshot.selfScore),
+    MANAGER: dec(snapshot.managerScore),
+    PEER: dec(snapshot.peerScore),
+    SUBORDINATE: dec(snapshot.subordinateScore),
+  };
 
   return {
     frozen: true,
@@ -558,7 +729,13 @@ export async function getResultDetail(
       submittedCount: snapshot.submittedCount,
       completionRate: dec(snapshot.completionRate),
     },
-    relations,
+    relations: buildResultRelations(
+      dimensions,
+      questions,
+      dimScore,
+      questionScore,
+      relationScore,
+    ),
   };
 }
 
@@ -595,10 +772,7 @@ export async function listReviewerDetails(
   personId: string,
   user: User,
 ): Promise<ReviewerDetailsDTO> {
-  const project = await requireProjectAdmin(projectId, user);
-  if (!RESULT_STATUSES.has(project.status)) {
-    throw new ApiError(409, "项目未冻结，暂无正式结果明细");
-  }
+  await requireProjectAdmin(projectId, user);
   const reviewee = await prisma.projectPerson.findUnique({
     where: { id: personId },
     select: { employeeNo: true, name: true, projectId: true },

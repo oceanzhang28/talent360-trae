@@ -35,9 +35,11 @@ const pct = (rate: number | null) =>
 export function ResultsTable({
   projectId,
   reviewees,
+  frozen = true,
 }: {
   projectId: string;
   reviewees: ResultRevieweeDTO[];
+  frozen?: boolean;
 }) {
   const columns: ColumnDef<ResultRevieweeDTO>[] = [
     {
@@ -102,7 +104,9 @@ export function ResultsTable({
       <CardHeader>
         <CardTitle>被评人结果（{reviewees.length} 人）</CardTitle>
         <CardDescription>
-          数据只读自冻结快照；点击「查看下钻」查看维度/题目得分与评价人明细
+          {frozen
+            ? "数据只读自冻结快照；点击「查看下钻」查看维度/题目得分与评价人明细"
+            : "当前为实时数据（基于已提交评价动态计算，未锁定）；点击「查看下钻」查看维度/题目得分与评价人明细"}
         </CardDescription>
       </CardHeader>
       <CardContent>

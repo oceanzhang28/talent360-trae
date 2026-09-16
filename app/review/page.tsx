@@ -83,6 +83,13 @@ export default async function ReviewPage() {
             <h2 className="flex items-center gap-2 text-sm font-semibold">
               {RELATION_LABELS[group.relationType]}评价
               <Badge variant="outline">{group.tasks.length}</Badge>
+              <Link
+                href={`/review/matrix?relation=${group.relationType}`}
+                className="text-primary text-xs font-normal underline-offset-2 hover:underline"
+                data-testid={`matrix-entry-${group.relationType}`}
+              >
+                矩阵模式
+              </Link>
             </h2>
             <div className="space-y-2">
               {group.tasks.map((task) => (

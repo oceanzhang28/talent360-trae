@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  useDraftAutosave,
+  type AnswerValue,
+} from "@/components/review/use-draft-autosave";
 import { RatingQuestion } from "@/components/questionnaire/rating-question";
 import { TextQuestion } from "@/components/questionnaire/text-question";
 import type {
@@ -18,16 +22,10 @@ import type {
 
 /**
  * 评价填写表单（单人模式，手机优先纵向布局）。
- * - 自动保存：debounce 1.5s，只提交变化字段（PUT /api/tasks/:id/draft 增量）
+ * - 自动保存：useDraftAutosave（debounce 1.5s，只提交变化字段，与矩阵模式共用）
  * - 提交：先落库未保存草稿，再 POST submit；必答缺失高亮提示
  * - SUBMITTED / 项目非 ACTIVE → 只读查看
  */
-
-const AUTOSAVE_DEBOUNCE_MS = 1500;
-
-type AnswerValue = { score: number | null; textValue: string | null };
-
-type SaveState = "idle" | "saving" | "saved" | "error";
 
 const RELATION_LABELS: Record<string, string> = {
   SELF: "自评",
@@ -53,93 +51,41 @@ export function ReviewForm({
     }
     return map;
   });
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [savedAt, setSavedAt] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [missingCodes, setMissingCodes] = useState<string[]>([]);
+  const [switching, setSwitching] = useState(false);
 
-  // 待保存队列：questionId → { value, seq }；seq 用于保存成功后只清除未被再次修改的条目
-  const pendingRef = useRef(
-    new Map<string, { value: AnswerValue; seq: number }>(),
-  );
-  const seqRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inFlightRef = useRef(false);
-
-  const flush = useCallback(async (): Promise<boolean> => {
-    if (inFlightRef.current) return false;
-    if (pendingRef.current.size === 0) return true;
-    const snapshot = Array.from(pendingRef.current.entries());
-    inFlightRef.current = true;
-    setSaveState("saving");
-    try {
-      const res = await fetch(`/api/tasks/${detail.task.id}/draft`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          answers: snapshot.map(([questionId, { value }]) => ({
-            questionId,
-            score: value.score,
-            textValue: value.textValue,
-          })),
-        }),
-      });
-      if (!res.ok) {
-        setSaveState("error");
-        return false;
-      }
-      for (const [questionId, { seq }] of snapshot) {
-        const current = pendingRef.current.get(questionId);
-        if (current && current.seq === seq) {
-          pendingRef.current.delete(questionId);
-        }
-      }
-      setSavedAt(new Date().toLocaleTimeString("zh-CN"));
-      setSaveState("saved");
-      return true;
-    } catch {
-      setSaveState("error");
-      return false;
-    } finally {
-      inFlightRef.current = false;
-    }
-  }, [detail.task.id]);
-
-  const scheduleSave = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      void flush();
-    }, AUTOSAVE_DEBOUNCE_MS);
-  }, [flush]);
+  const { saveState, savedAt, update, flush, clearTimer } = useDraftAutosave();
 
   const updateAnswer = useCallback(
     (questionId: string, value: AnswerValue) => {
       setAnswers((prev) => ({ ...prev, [questionId]: value }));
       if (!editable) return;
-      seqRef.current += 1;
-      pendingRef.current.set(questionId, { value, seq: seqRef.current });
-      setSaveState("idle");
-      scheduleSave();
+      update(detail.task.id, questionId, value);
     },
-    [editable, scheduleSave],
+    [detail.task.id, editable, update],
   );
 
-  // 卸载清理定时器；离开页面前有未保存草稿时提示（真实用户场景）
-  useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      if (pendingRef.current.size > 0) {
-        e.preventDefault();
-      }
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => {
-      window.removeEventListener("beforeunload", handler);
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
   const missingSet = useMemo(() => new Set(missingCodes), [missingCodes]);
+
+  /** 切矩阵模式：先落库未保存草稿再跳转（草稿不丢） */
+  const handleSwitchToMatrix = useCallback(async () => {
+    if (switching) return;
+    setSwitching(true);
+    setSubmitError(null);
+    try {
+      clearTimer();
+      const flushed = await flush();
+      if (!flushed) {
+        setSubmitError("草稿保存失败，请检查网络后重试");
+        return;
+      }
+      router.push(`/review/matrix?relation=${detail.relationType}`);
+    } finally {
+      setSwitching(false);
+    }
+  }, [clearTimer, detail.relationType, flush, router, switching]);
 
   const handleSubmit = useCallback(async () => {
     if (!editable || submitting) return;
@@ -147,7 +93,7 @@ export function ReviewForm({
     setSubmitError(null);
     setMissingCodes([]);
     try {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      clearTimer();
       const flushed = await flush();
       if (!flushed) {
         setSubmitError("草稿保存失败，请检查网络后重试");
@@ -173,7 +119,7 @@ export function ReviewForm({
     } finally {
       setSubmitting(false);
     }
-  }, [detail.task.id, editable, flush, router, submitting]);
+  }, [clearTimer, detail.task.id, editable, flush, router, submitting]);
 
   const saveStatusText = !editable
     ? ""
@@ -217,6 +163,16 @@ export function ReviewForm({
               {detail.project.instruction}
             </p>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-1 w-full sm:w-auto"
+            onClick={() => void handleSwitchToMatrix()}
+            disabled={switching}
+            data-testid="switch-to-matrix"
+          >
+            {switching ? "切换中…" : "切换矩阵模式"}
+          </Button>
         </CardContent>
       </Card>
 

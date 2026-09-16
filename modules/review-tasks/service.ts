@@ -443,20 +443,40 @@ export type SubmitResult = {
   status: "SUBMITTED";
 };
 
+export type MissingItem = { code: string; title: string };
+
+type SubmitOutcome =
+  | { ok: true; version: number }
+  | { ok: false; reason: string; missing?: MissingItem[] };
+
 /**
- * 按人提交：必答项齐全 → 生成 Submission 新版本 + SubmissionAnswer 快照。
- * - 旧有效版本标记 invalidatedAt（新版本覆盖）
- * - 项目首次正式提交设置问卷 lockedAt（此后 HR 不能再改问卷）
+ * 提交核心逻辑（单人 submitTask 与批量 batchSubmitTasks 共用）：
+ * 权限错误（403/404）直接抛出；窗口/必答问题返回结构化失败原因。
  */
-export async function submitTask(
+async function attemptSubmit(
   taskId: string,
   user: User,
-): Promise<SubmitResult> {
-  const { task, project, questionnaire, questions } = await loadTaskBundle(
-    taskId,
-    user,
-  );
-  assertDraftWritable(task, project);
+): Promise<{ revieweeName: string; outcome: SubmitOutcome }> {
+  const { task, relation, project, questionnaire, questions } =
+    await loadTaskBundle(taskId, user);
+  const reviewee = await prisma.projectPerson.findUnique({
+    where: { id: relation.revieweePersonId },
+    select: { name: true },
+  });
+  const revieweeName = reviewee?.name ?? "被评人";
+
+  if (project.status !== "ACTIVE") {
+    return {
+      revieweeName,
+      outcome: { ok: false, reason: "项目当前不可填写评价（未开始或已截止）" },
+    };
+  }
+  if (task.status === "SUBMITTED") {
+    return {
+      revieweeName,
+      outcome: { ok: false, reason: "已提交，无需重复提交" },
+    };
+  }
 
   const drafts = await prisma.draftAnswer.findMany({ where: { taskId } });
   const answerMap = new Map(
@@ -470,9 +490,14 @@ export async function submitTask(
   );
   const missing = findMissingRequired(questions, answerMap);
   if (missing.length > 0) {
-    throw new ApiError(400, "必答项未完成，请填写后再提交", {
-      missing: missing.map((q) => ({ code: q.code, title: q.title })),
-    });
+    return {
+      revieweeName,
+      outcome: {
+        ok: false,
+        reason: "必答项未完成，请填写后再提交",
+        missing: missing.map((q) => ({ code: q.code, title: q.title })),
+      },
+    };
   }
 
   const version = (task.currentSubmissionVersion ?? 0) + 1;
@@ -512,7 +537,274 @@ export async function submitTask(
       });
     }
   });
-  return { taskId, version, status: "SUBMITTED" };
+  return { revieweeName, outcome: { ok: true, version } };
+}
+
+/**
+ * 按人提交：必答项齐全 → 生成 Submission 新版本 + SubmissionAnswer 快照。
+ * - 旧有效版本标记 invalidatedAt（新版本覆盖）
+ * - 项目首次正式提交设置问卷 lockedAt（此后 HR 不能再改问卷）
+ */
+export async function submitTask(
+  taskId: string,
+  user: User,
+): Promise<SubmitResult> {
+  const { outcome } = await attemptSubmit(taskId, user);
+  if (outcome.ok) {
+    return { taskId, version: outcome.version, status: "SUBMITTED" };
+  }
+  throw new ApiError(outcome.missing ? 400 : 409, outcome.reason, {
+    ...(outcome.missing ? { missing: outcome.missing } : {}),
+  });
+}
+
+// ---------- 批量提交（矩阵模式） ----------
+
+export type BatchSubmitResult = {
+  submitted: Array<{
+    taskId: string;
+    revieweeName: string;
+    version: number;
+  }>;
+  skipped: Array<{
+    taskId: string;
+    revieweeName: string;
+    reason: string;
+    missing?: MissingItem[];
+  }>;
+};
+
+const MAX_BATCH_SUBMIT = 100;
+
+/**
+ * 批量提交（PRD 第 27 节）：一次提交所有已填写完整的人员，
+ * 必答不全 / 已提交 / 窗口不允许的跳过并返回原因；权限错误（非本人任务）整体 403。
+ */
+export async function batchSubmitTasks(
+  user: User,
+  body: unknown,
+): Promise<BatchSubmitResult> {
+  const payload = (body ?? {}) as { taskIds?: unknown };
+  if (!Array.isArray(payload.taskIds) || payload.taskIds.length === 0) {
+    throw new ApiError(400, "taskIds 不能为空");
+  }
+  if (payload.taskIds.length > MAX_BATCH_SUBMIT) {
+    throw new ApiError(400, `单次最多提交 ${MAX_BATCH_SUBMIT} 份`);
+  }
+  const seen = new Set<string>();
+  for (const id of payload.taskIds) {
+    if (typeof id !== "string" || !id) {
+      throw new ApiError(400, "taskIds 格式错误");
+    }
+    seen.add(id);
+  }
+
+  const submitted: BatchSubmitResult["submitted"] = [];
+  const skipped: BatchSubmitResult["skipped"] = [];
+  for (const taskId of seen) {
+    const { revieweeName, outcome } = await attemptSubmit(taskId, user);
+    if (outcome.ok) {
+      submitted.push({ taskId, revieweeName, version: outcome.version });
+    } else {
+      skipped.push({ taskId, revieweeName, reason: outcome.reason });
+      if (outcome.missing) {
+        skipped[skipped.length - 1]!.missing = outcome.missing;
+      }
+    }
+  }
+  return { submitted, skipped };
+}
+
+// ---------- 矩阵模式数据（技术文档第 50 节） ----------
+
+export type MatrixTaskDTO = {
+  taskId: string;
+  status: TaskStatus;
+  editable: boolean;
+  reviewee: {
+    name: string;
+    employeeNo: string;
+    department: string | null;
+    position: string | null;
+  };
+  drafts: Array<{
+    questionId: string;
+    score: number | null;
+    textValue: string | null;
+  }>;
+};
+
+export type MatrixGroupDTO = {
+  project: {
+    id: string;
+    name: string;
+    status: string;
+    endAt: string | null;
+    instruction: string | null;
+  };
+  scales: Array<{ value: number; label: string }>;
+  dimensions: TaskDimension[];
+  tasks: MatrixTaskDTO[];
+};
+
+export type MyMatrixDTO = {
+  relationType: RelationType;
+  /** 各关系的可见任务数（渲染关系切换 tab） */
+  relationCounts: Record<RelationType, number>;
+  groups: MatrixGroupDTO[];
+};
+
+const VALID_RELATIONS = new Set<string>([
+  "SELF",
+  "MANAGER",
+  "PEER",
+  "SUBORDINATE",
+]);
+
+function emptyRelationCounts(): Record<RelationType, number> {
+  return { SELF: 0, MANAGER: 0, PEER: 0, SUBORDINATE: 0 };
+}
+
+/**
+ * 矩阵模式数据：某关系下（跨项目）的全部任务 + 按关系过滤的问卷结构 + 草稿。
+ * 单元格与单人模式共用同一 DraftAnswer（taskId + questionId），实时互通。
+ * relation 缺省时自动选第一个有任务的关系。
+ */
+export async function getMyMatrix(
+  user: User,
+  relation?: string,
+): Promise<MyMatrixDTO> {
+  if (relation !== undefined && !VALID_RELATIONS.has(relation)) {
+    throw new ApiError(400, "relation 参数不合法");
+  }
+  if (!user.employeeNo) {
+    return {
+      relationType: (relation ?? "SELF") as RelationType,
+      relationCounts: emptyRelationCounts(),
+      groups: [],
+    };
+  }
+
+  const relations = await prisma.reviewRelation.findMany({
+    where: {
+      active: true,
+      reviewer: { employeeNo: user.employeeNo },
+      project: { deletedAt: null },
+    },
+    include: {
+      reviewee: {
+        select: {
+          name: true,
+          employeeNo: true,
+          department: true,
+          position: true,
+        },
+      },
+      project: true,
+      tasks: true,
+    },
+  });
+
+  // 惰性同步项目状态 + 统计各关系任务数
+  const syncedProjects = new Map<string, Project>();
+  const relationCounts = emptyRelationCounts();
+  const visibleRels: typeof relations = [];
+  for (const rel of relations) {
+    const task = rel.tasks[0];
+    if (!task) continue;
+    let project = syncedProjects.get(rel.projectId) ?? rel.project;
+    if (project === rel.project) {
+      project = await syncStatus(project);
+      syncedProjects.set(rel.projectId, project);
+    }
+    if (!VISIBLE_PROJECT_STATUSES.has(project.status)) continue;
+    relationCounts[rel.relationType] += 1;
+    visibleRels.push(rel);
+  }
+
+  const selected =
+    relation !== undefined
+      ? (relation as RelationType)
+      : (RELATION_ORDER.find((r) => relationCounts[r] > 0) ?? "SELF");
+  const scoped = visibleRels.filter((rel) => rel.relationType === selected);
+
+  // 按项目分组组装
+  const byProject = new Map<
+    string,
+    { project: Project; rels: typeof relations }
+  >();
+  for (const rel of scoped) {
+    const project = syncedProjects.get(rel.projectId)!;
+    const entry = byProject.get(rel.projectId) ?? { project, rels: [] };
+    entry.rels.push(rel);
+    byProject.set(rel.projectId, entry);
+  }
+
+  const taskIds = scoped.map((rel) => rel.tasks[0]!.id);
+  const drafts = taskIds.length
+    ? await prisma.draftAnswer.findMany({
+        where: { taskId: { in: taskIds } },
+        orderBy: { updatedAt: "asc" },
+      })
+    : [];
+  const draftsByTask = new Map<string, typeof drafts>();
+  for (const d of drafts) {
+    const list = draftsByTask.get(d.taskId) ?? [];
+    list.push(d);
+    draftsByTask.set(d.taskId, list);
+  }
+
+  const groups: MatrixGroupDTO[] = [];
+  for (const { project, rels } of byProject.values()) {
+    const questionnaire = await prisma.questionnaire.findUnique({
+      where: { projectId: project.id },
+    });
+    const tree = questionnaire
+      ? filterTreeForRelation(await loadRawTree(questionnaire.id), selected)
+      : [];
+    const scales = await prisma.projectScale.findMany({
+      where: { projectId: project.id },
+      orderBy: { order: "asc" },
+    });
+    groups.push({
+      project: {
+        id: project.id,
+        name: project.name,
+        status: project.status,
+        endAt: project.endAt?.toISOString() ?? null,
+        instruction: project.questionnaireInstruction,
+      },
+      scales: scales.map((s) => ({
+        value: s.value.toNumber(),
+        label: s.label,
+      })),
+      dimensions: tree,
+      tasks: rels
+        .map((rel) => {
+          const task = rel.tasks[0]!;
+          return {
+            taskId: task.id,
+            status: task.status,
+            editable:
+              project.status === "ACTIVE" && task.status !== "SUBMITTED",
+            reviewee: rel.reviewee,
+            drafts: (draftsByTask.get(task.id) ?? []).map((d) => ({
+              questionId: d.questionId,
+              score: d.score === null ? null : d.score.toNumber(),
+              textValue: d.textValue,
+            })),
+          };
+        })
+        .sort((a, b) =>
+          a.reviewee.name.localeCompare(b.reviewee.name, "zh-Hans-CN"),
+        ),
+    });
+  }
+  groups.sort((a, b) =>
+    a.project.name.localeCompare(b.project.name, "zh-Hans-CN"),
+  );
+
+  return { relationType: selected, relationCounts, groups };
 }
 
 // ---------- HR 退回 ----------

@@ -2,7 +2,7 @@
 
 > **使用规则**：严格按 Sprint 顺序执行，一次只做一个 Sprint。每个任务完成后勾选 `[x]`，且必须满足 `AGENTS.md` 的 Definition of Done 才能进入下一个任务。禁止跳到后面 Sprint 提前做高级功能。
 >
-> **当前进度**：Sprint 5（评价端·单人模式）——Sprint 0 ~ 4 已完成 ✅
+> **当前进度**：Sprint 6（矩阵评价模式）——Sprint 0 ~ 5 已完成 ✅
 
 ---
 
@@ -127,17 +127,19 @@
 
 ---
 
-## Sprint 6：矩阵评价模式
+## Sprint 6：矩阵评价模式 ✅（2026-09-16 完成）
 
-- [ ] `/review/matrix?relation=XXX&dimension=xxx`：按关系 → 按维度分页
-- [ ] 矩阵表：行=被评人，列=该维度题目，TanStack Table（PC 横向表格）
-- [ ] 每单元格复用同一 DraftAnswer（taskId + questionId），与单人模式数据实时互通
-- [ ] 开放题：每个被评人独立文本框
-- [ ] 批量提交：`POST /api/tasks/batch-submit`，一次提交所有已填写完整的人员
-- [ ] 单人/矩阵模式一键切换，草稿不丢
-- [ ] 移动端矩阵：固定姓名列 + 横向滑动，或"当前维度→当前题目→人员卡片"（禁止整表缩放）
+- [x] `GET /api/my/matrix?relation=XXX`：矩阵数据（该关系跨项目的任务 + 按关系过滤的问卷结构 + 量表 + 草稿回填；relation 缺省自动选第一个有任务的关系）
+- [x] `/review/matrix?relation=XXX&dimension=xxx`：关系 tab → 维度分页（replaceState 同步 URL，本地切换不触发重新请求、不丢编辑中数据）
+- [x] 矩阵表（PC）：TanStack Table，行=被评人，列=当前维度题目（直挂题 + 二级维度题，`flattenDimensionQuestions`）；容器横向滚动，禁止整表缩放
+- [x] 每单元格复用同一 DraftAnswer（taskId + questionId），与单人模式数据实时互通（草稿读写走同一 `PUT /api/tasks/:id/draft`）
+- [x] 开放题：每个被评人独立文本框（矩阵单元格 Textarea / 移动卡片 TextQuestion）
+- [x] 批量提交：`POST /api/tasks/batch-submit`，一次提交所有已填写完整的人员（必答不全 / 已提交 / 窗口不允许的跳过并返回原因明细；混入他人任务整批 403）
+- [x] 单人/矩阵一键切换，草稿不丢（切换前先 flush 落库；提取 `useDraftAutosave` 共享 hook，支持多任务分组并行保存）
+- [x] 移动端矩阵：「当前维度 → 当前题目 → 人员卡片」卡片流（复用大按钮量表组件，吸底批量提交栏）
+- [x] 任务列表页每个关系分组新增「矩阵模式」入口；单人评价页新增「切换矩阵模式」按钮
 
-**验收**：矩阵填一半 → 切单人模式数据完整；反向同样；移动端可实际操作（Playwright 移动视口 + 真机抽查）。
+**验收结果**：✅ 矩阵填一半 → 切单人模式数据完整（E2E：矩阵 Q1=4.5 → 单人页 aria-pressed=true）；反向同样（单人 → 切回矩阵数据保留）；批量提交成功 2 份、必答缺失跳过并返回缺失明细（Q1~Q4）；移动端卡片流（维度 → 题目 select → 人员卡片打分）实际可操作并完成批量提交。铁律 4：批量提交混入他人任务整批 403（集成测试）；HR 无任何草稿数据路径。单元 4（维度列组装）、集成 8（矩阵数据/草稿互通/批量提交全场景/权限/参数校验/窗口）、E2E 4（PC 矩阵互通+批量提交、mobile 卡片流，各 × 工程互斥跳过），全套 126 单元/集成 + 34 E2E 通过，lint/typecheck/format 通过。
 
 ---
 

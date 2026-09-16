@@ -113,6 +113,11 @@ export function flattenQuestions(dims: TaskDimension[]): TaskQuestion[] {
   return out;
 }
 
+/** 矩阵模式：一级维度页内的题目列（直挂题在前，之后按二级维度顺序，技术文档第 50 节） */
+export function flattenDimensionQuestions(dim: TaskDimension): TaskQuestion[] {
+  return [...dim.questions, ...dim.children.flatMap((c) => c.questions)];
+}
+
 // ---------- 草稿载荷校验（PUT /api/tasks/:id/draft） ----------
 
 export type DraftAnswerInput = {

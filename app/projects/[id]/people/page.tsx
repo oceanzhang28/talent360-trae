@@ -1,5 +1,7 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
+import { ProjectNav } from "@/components/project-nav";
 import { getCurrentUser } from "@/modules/auth/service";
 import { ApiError } from "@/lib/permissions";
 import { getProject } from "@/modules/projects/service";
@@ -38,28 +40,22 @@ export default async function PeoplePage({
   }
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-5xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">人员与评价关系</h1>
-          <p className="text-muted-foreground text-sm">
-            {project.name} · {people.length} 名人员 ·{" "}
-            {relations.filter((r) => r.active).length} 条有效关系
-          </p>
-        </div>
-        <Link
-          href={`/projects/${id}`}
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          返回项目设置
-        </Link>
-      </div>
+    <AppShell user={user}>
+      <ProjectNav projectId={id} />
+      <PageHeader
+        breadcrumbs={[
+          { label: "项目列表", href: "/projects" },
+          { label: project.name, href: `/projects/${id}` },
+        ]}
+        title="人员与评价关系"
+        description={`${people.length} 名人员 · ${relations.filter((r) => r.active).length} 条有效关系 · Excel 两阶段导入或手工增删改`}
+      />
       <PeopleManager
         projectId={id}
         selfReviewEnabled={project.selfReviewEnabled}
         initialPeople={people}
         initialRelations={relations}
       />
-    </main>
+    </AppShell>
   );
 }

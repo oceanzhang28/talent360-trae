@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
 import { getCurrentUser } from "@/modules/auth/service";
 import { getMyMatrix } from "@/modules/review-tasks/service";
 import { MatrixView } from "./matrix-view";
@@ -19,5 +20,9 @@ export default async function MatrixReviewPage({
   }
   const { relation, dimension } = await searchParams;
   const data = await getMyMatrix(user, relation);
-  return <MatrixView data={data} initialDimension={dimension ?? null} />;
+  return (
+    <AppShell user={user} width="wide" bottomSpace>
+      <MatrixView data={data} initialDimension={dimension ?? null} />
+    </AppShell>
+  );
 }

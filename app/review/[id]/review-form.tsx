@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Breadcrumbs } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -132,7 +133,13 @@ export function ReviewForm({
           : "作答后自动保存";
 
   return (
-    <main className="mx-auto w-full max-w-2xl space-y-4 p-4 pb-28 sm:p-6">
+    <>
+      <Breadcrumbs
+        items={[
+          { label: "工作台", href: "/" },
+          { label: "我的评价", href: "/review" },
+        ]}
+      />
       {/* 被评人信息 */}
       <Card>
         <CardContent className="space-y-1.5">
@@ -221,7 +228,7 @@ export function ReviewForm({
 
       {/* 底部操作栏（吸底，PC/手机一致） */}
       <div className="bg-background/95 fixed inset-x-0 bottom-0 z-10 border-t p-3 backdrop-blur">
-        <div className="mx-auto flex max-w-2xl items-center justify-between gap-3">
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
           <span className="text-muted-foreground min-w-0 truncate text-xs">
             {saveStatusText}
           </span>
@@ -234,7 +241,7 @@ export function ReviewForm({
           )}
         </div>
       </div>
-    </main>
+    </>
   );
 }
 

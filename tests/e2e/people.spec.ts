@@ -108,8 +108,8 @@ test("完整流程：模板导入 → 自评生成 → 人员统计 → 手工�
     `E2E-S4-人员项目-${Date.now()}`,
   );
 
-  // 从详情页入口进入人员与关系管理页
-  await page.getByRole("link", { name: "管理人员与关系" }).click();
+  // 从项目级常驻导航进入人员与关系管理页
+  await page.getByRole("link", { name: "人员与关系" }).click();
   await page.waitForURL(new RegExp(`/projects/${projectId}/people$`));
 
   // 通过 API 下载模板（与浏览器共享登录态），落盘后经 UI 上传

@@ -1,6 +1,8 @@
-import Link from "next/link";
 import { Fragment } from "react";
 import { notFound, redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
+import { ProjectNav } from "@/components/project-nav";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -157,26 +159,25 @@ export default async function ResultDetailPage({
   const { reviewee } = detail;
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-5xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">{reviewee.name} 的测评结果</h1>
-          <p className="text-muted-foreground text-sm">
+    <AppShell user={user}>
+      <ProjectNav projectId={id} />
+      <PageHeader
+        breadcrumbs={[
+          { label: "项目列表", href: "/projects" },
+          { label: "结果列表", href: `/projects/${id}/results` },
+        ]}
+        title={`${reviewee.name} 的测评结果`}
+        description={
+          <>
             {reviewee.employeeNo}
             {reviewee.department ? ` · ${reviewee.department}` : ""}
             {reviewee.position ? ` · ${reviewee.position}` : ""}
             {reviewee.grade ? ` · ${reviewee.grade}` : ""}
             {detail.frozenAt &&
               ` · 冻结于 ${new Date(detail.frozenAt).toLocaleString("zh-CN")}`}
-          </p>
-        </div>
-        <Link
-          href={`/projects/${id}/results`}
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          返回结果列表
-        </Link>
-      </div>
+          </>
+        }
+      />
 
       <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {(
@@ -283,6 +284,6 @@ export default async function ResultDetailPage({
           ))}
         </CardContent>
       </Card>
-    </main>
+    </AppShell>
   );
 }

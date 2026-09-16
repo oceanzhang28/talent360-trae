@@ -9,6 +9,7 @@ import {
   type ColumnDef,
 } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -288,23 +289,15 @@ export function MatrixView({
           : "作答后自动保存";
 
   return (
-    <main className="mx-auto w-full max-w-6xl space-y-4 p-4 pb-28 sm:p-6">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">矩阵评价</h1>
-          <p className="text-muted-foreground text-sm">
-            {RELATION_LABELS[data.relationType]}评价 · 行=被评人，列=题目
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void navigate("/review")}
-          data-testid="back-to-list"
-        >
-          返回列表
-        </Button>
-      </div>
+    <>
+      <PageHeader
+        breadcrumbs={[
+          { label: "工作台", href: "/" },
+          { label: "我的评价", href: "/review" },
+        ]}
+        title="矩阵评价"
+        description={`${RELATION_LABELS[data.relationType]}评价 · 行=被评人，列=题目`}
+      />
 
       {/* 关系切换 tab */}
       <div
@@ -622,7 +615,7 @@ export function MatrixView({
           </p>
         </>
       )}
-    </main>
+    </>
   );
 }
 

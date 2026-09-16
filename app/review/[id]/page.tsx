@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
 import { ApiError } from "@/lib/permissions";
 import { getCurrentUser } from "@/modules/auth/service";
 import { getDraft, getTaskDetail } from "@/modules/review-tasks/service";
@@ -37,5 +38,9 @@ export default async function TaskReviewPage({
   if (!detail) {
     notFound();
   }
-  return <ReviewForm detail={detail} initialAnswers={draft} />;
+  return (
+    <AppShell user={user} width="narrow" bottomSpace>
+      <ReviewForm detail={detail} initialAnswers={draft} />
+    </AppShell>
+  );
 }

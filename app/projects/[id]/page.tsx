@@ -1,19 +1,17 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
+import { ProjectNav } from "@/components/project-nav";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { getCurrentUser } from "@/modules/auth/service";
 import { ApiError } from "@/lib/permissions";
 import { getProject } from "@/modules/projects/service";
 import { getProjectQuestionnaire } from "@/modules/questionnaires/service";
-import { STATUS_BADGE, STATUS_LABEL } from "@/modules/projects/status";
+import {
+  STATUS_BADGE,
+  STATUS_LABEL,
+  formatDateTime,
+} from "@/modules/projects/status";
 import { AdminsManager } from "./admins-manager";
 import { LifecycleActions } from "./lifecycle-actions";
 import { ProjectEditForm } from "./project-edit-form";
@@ -49,21 +47,18 @@ export default async function ProjectDetailPage({
   const questionnaire = await getProjectQuestionnaire(id, user);
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-3xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">{project.name}</h1>
+    <AppShell user={user}>
+      <ProjectNav projectId={project.id} />
+      <PageHeader
+        breadcrumbs={[{ label: "项目列表", href: "/projects" }]}
+        title={project.name}
+        badge={
           <Badge variant={STATUS_BADGE[project.status]}>
             {STATUS_LABEL[project.status]}
           </Badge>
-        </div>
-        <Link
-          href="/projects"
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          返回列表
-        </Link>
-      </div>
+        }
+        description={`${formatDateTime(project.startAt)} 至 ${formatDateTime(project.endAt)} · 自评${project.selfReviewEnabled ? "已启用" : "未启用"}`}
+      />
 
       <LifecycleActions
         project={project}
@@ -78,44 +73,12 @@ export default async function ProjectDetailPage({
           !questionnaire?.lockedAt
         }
       />
-      <Card>
-        <CardHeader>
-          <CardTitle>人员与评价关系</CardTitle>
-          <CardDescription>
-            Excel 导入（预检查 → 正式导入）、手工增删改、自评自动生成
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/projects/${project.id}/people`}>管理人员与关系</Link>
-          </Button>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>进度与结果</CardTitle>
-          <CardDescription>
-            进度看板（催办 + 冻结入口）；结果后台
-            {project.status === "FROZEN" || project.status === "ARCHIVED"
-              ? "（只读冻结快照）"
-              : "（实时，仅统计已提交评价）"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/projects/${project.id}/progress`}>进度看板</Link>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/projects/${project.id}/results`}>结果后台</Link>
-          </Button>
-        </CardContent>
-      </Card>
       <ScalesEditor
         projectId={project.id}
         scales={scales}
         editable={project.status === "DRAFT" || project.status === "PUBLISHED"}
       />
       <AdminsManager projectId={project.id} admins={admins} />
-    </main>
+    </AppShell>
   );
 }

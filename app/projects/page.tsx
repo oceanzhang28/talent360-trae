@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,28 +40,26 @@ export default async function ProjectsPage() {
   const projects = await listProjects(user);
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-4xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">项目管理</h1>
-        <div className="flex items-center gap-3">
-          <Link
-            href="/"
-            className="text-muted-foreground hover:text-foreground text-sm"
-          >
-            返回首页
-          </Link>
+    <AppShell user={user}>
+      <PageHeader
+        breadcrumbs={[{ label: "工作台", href: "/" }]}
+        title="项目管理"
+        description={
+          user.systemRole === "SYSTEM_ADMIN"
+            ? "系统管理员可查看所有项目"
+            : "仅显示您管理的项目；创建项目后自动成为项目管理员"
+        }
+        actions={
           <Button asChild size="sm">
             <Link href="/projects/new">新建项目</Link>
           </Button>
-        </div>
-      </div>
+        }
+      />
       <Card>
         <CardHeader>
           <CardTitle>项目列表（{projects.length}）</CardTitle>
           <CardDescription>
-            {user.systemRole === "SYSTEM_ADMIN"
-              ? "系统管理员可查看所有项目"
-              : "仅显示您管理的项目；创建项目后自动成为项目管理员"}
+            进入项目后可管理问卷、人员与评价关系、进度看板与结果后台
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -108,6 +108,6 @@ export default async function ProjectsPage() {
           )}
         </CardContent>
       </Card>
-    </main>
+    </AppShell>
   );
 }

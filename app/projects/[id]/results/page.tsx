@@ -1,5 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
+import { ProjectNav } from "@/components/project-nav";
 import { getCurrentUser } from "@/modules/auth/service";
 import { ApiError } from "@/lib/permissions";
 import { listProjectResults } from "@/modules/results/service";
@@ -33,32 +36,24 @@ export default async function ResultsPage({
   }
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-6xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">结果后台</h1>
-          <p className="text-muted-foreground text-sm">
-            {`${results.overall.submitted}/${results.overall.expected} 份评价${results.frozen ? "已计入" : "已提交"}（${((results.overall.rate ?? 0) * 100).toFixed(2)}%）${results.frozen ? "" : " · 实时"}`}
-          </p>
-        </div>
-        <Link
-          href={`/projects/${id}/progress`}
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          返回进度看板
-        </Link>
-      </div>
+    <AppShell user={user}>
+      <ProjectNav projectId={id} />
+      <PageHeader
+        breadcrumbs={[
+          { label: "项目列表", href: "/projects" },
+          { label: "项目设置", href: `/projects/${id}` },
+        ]}
+        title="结果后台"
+        description={`${results.overall.submitted}/${results.overall.expected} 份评价${results.frozen ? "已计入" : "已提交"}（${((results.overall.rate ?? 0) * 100).toFixed(2)}%）${results.frozen ? "" : " · 实时"}`}
+        actions={results.frozen ? <ExportButton projectId={id} /> : undefined}
+      />
 
-      {results.frozen ? (
-        <div className="flex justify-end">
-          <ExportButton projectId={id} />
-        </div>
-      ) : results.reviewees.length > 0 ? (
+      {!results.frozen && results.reviewees.length > 0 && (
         <div className="rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           当前为<b>实时数据</b>（基于已提交评价动态计算，未锁定显示）；
           冻结后将固化为正式快照，导出版本以冻结后为准。
         </div>
-      ) : null}
+      )}
 
       {results.reviewees.length === 0 ? (
         <div className="rounded-md border p-6 text-center">
@@ -80,6 +75,6 @@ export default async function ResultsPage({
           frozen={results.frozen}
         />
       )}
-    </main>
+    </AppShell>
   );
 }

@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -53,23 +55,12 @@ export default async function ReviewPage() {
   const visibleGroups = my.groups.filter((g) => g.tasks.length > 0);
 
   return (
-    <main className="mx-auto w-full max-w-2xl space-y-6 p-4 sm:p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">我的评价</h1>
-          <p className="text-muted-foreground text-sm">
-            共 {my.counts.total} 份 · 待评价 {my.counts.notStarted} · 进行中{" "}
-            {my.counts.inProgress} · 已退回 {my.counts.returned} · 已完成{" "}
-            {my.counts.submitted}
-          </p>
-        </div>
-        <Link
-          href="/"
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          返回首页
-        </Link>
-      </div>
+    <AppShell user={user}>
+      <PageHeader
+        breadcrumbs={[{ label: "工作台", href: "/" }]}
+        title="我的评价"
+        description={`共 ${my.counts.total} 份 · 待评价 ${my.counts.notStarted} · 进行中 ${my.counts.inProgress} · 已退回 ${my.counts.returned} · 已完成 ${my.counts.submitted}`}
+      />
 
       {visibleGroups.length === 0 ? (
         <Card>
@@ -128,6 +119,6 @@ export default async function ReviewPage() {
           </section>
         ))
       )}
-    </main>
+    </AppShell>
   );
 }

@@ -1,5 +1,7 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
+import { ProjectNav } from "@/components/project-nav";
 import { getCurrentUser } from "@/modules/auth/service";
 import { ApiError } from "@/lib/permissions";
 import { getProjectProgress } from "@/modules/results/service";
@@ -32,26 +34,21 @@ export default async function ProgressPage({
   }
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-6xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">进度看板</h1>
-          <p className="text-muted-foreground text-sm">
-            {progress.project.name}
-          </p>
-        </div>
-        <Link
-          href={`/projects/${id}`}
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          返回项目设置
-        </Link>
-      </div>
+    <AppShell user={user}>
+      <ProjectNav projectId={id} />
+      <PageHeader
+        breadcrumbs={[
+          { label: "项目列表", href: "/projects" },
+          { label: progress.project.name, href: `/projects/${id}` },
+        ]}
+        title="进度看板"
+        description="总体与分关系完成率、催办清单与结果冻结入口"
+      />
       <ProgressBoard
         projectId={id}
         progress={progress}
         isSystemAdmin={user.systemRole === "SYSTEM_ADMIN"}
       />
-    </main>
+    </AppShell>
   );
 }

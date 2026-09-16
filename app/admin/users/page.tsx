@@ -1,5 +1,6 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
 import {
   Card,
   CardContent,
@@ -33,16 +34,12 @@ export default async function AdminUsersPage() {
   const users = await prisma.user.findMany({ orderBy: { createdAt: "asc" } });
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-4xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">用户管理</h1>
-        <Link
-          href="/"
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          返回首页
-        </Link>
-      </div>
+    <AppShell user={user}>
+      <PageHeader
+        breadcrumbs={[{ label: "工作台", href: "/" }]}
+        title="用户管理"
+        description="集中维护员工主数据与系统角色；HR 导入评价关系时可复用部门/岗位/职级"
+      />
       <PeopleTools />
       <Card>
         <CardHeader>
@@ -95,6 +92,6 @@ export default async function AdminUsersPage() {
           </Table>
         </CardContent>
       </Card>
-    </main>
+    </AppShell>
   );
 }

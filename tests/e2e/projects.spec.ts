@@ -58,7 +58,8 @@ test("HR 新建项目 → 配置 → 发布成功", async ({ page }) => {
     .filter({ hasText: /^5\.0$/ })
     .getByRole("textbox");
   await expect(lastScaleInput).toHaveValue("持续稳定体现");
-  await expect(page.getByText("E2E项目管理员")).toBeVisible();
+  // 顶栏也会显示当前登录用户，断言范围限定在页面内容区
+  await expect(page.locator("main").getByText("E2E项目管理员")).toBeVisible();
 
   // 修改档位说明
   await firstScaleInput.fill("完全没有体现");

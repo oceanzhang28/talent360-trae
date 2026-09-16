@@ -1,0 +1,94 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 系统角色：全局权限（HR 项目管理员不在此处，通过 ProjectAdmin 管理）
+enum SystemRole {
+  SYSTEM_ADMIN
+  USER
+}
+
+// 项目状态机（PRD 6.2）：DRAFT -> PUBLISHED -> ACTIVE -> CLOSED -> FROZEN -> ARCHIVED
+// DELETED 为软删除标记（技术文档第 58 节），不参与正常状态流转
+enum ProjectStatus {
+  DRAFT // 草稿：HR 配置阶段
+  PUBLISHED // 已发布：尚未到开始时间
+  ACTIVE // 测评中：员工可填写评价
+  CLOSED // 已截止：员工不能继续提交
+  FROZEN // 已冻结：正式测评结果（评分快照 Sprint 8 补充）
+  ARCHIVED // 已归档：历史项目
+  DELETED // 软删除：deletedAt + purgeAfter（+30 天）
+}
+
+// 系统登录用户（身份匹配见技术文档第 7 节：飞书 OAuth -> employeeNo）
+model User {
+  id            String         @id @default(cuid())
+  feishuOpenId  String?        @unique
+  feishuUnionId String?
+  employeeNo    String?        @unique
+  name          String
+  systemRole    SystemRole     @default(USER)
+  lastLoginAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  projectAdmins ProjectAdmin[]
+}
+
+// 测评项目（单公司内部工具，任何登录用户可创建，创建者自动成为项目管理员）
+model Project {
+  id                        String        @id @default(cuid())
+  name                      String
+  description              String?       @db.Text
+  questionnaireInstruction String?       @db.Text
+  startAt                   DateTime?
+  endAt                     DateTime?
+  status                    ProjectStatus @default(DRAFT)
+  selfReviewEnabled         Boolean       @default(true)
+  // 关系权重（PRD 第 33 节）：百分数，发布时校验三者合计 = 100
+  managerWeight             Decimal       @default(40) @db.Decimal(5, 2)
+  peerWeight                Decimal       @default(30) @db.Decimal(5, 2)
+  subordinateWeight         Decimal       @default(30) @db.Decimal(5, 2)
+  frozenAt                  DateTime?
+  frozenBy                  String?
+  deletedAt                 DateTime?
+  purgeAfter                DateTime?
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+
+  admins ProjectAdmin[]
+  scales ProjectScale[]
+
+  @@index([status])
+}
+
+// 项目管理员（HR）：项目级权限，系统管理员天然拥有所有项目权限
+model ProjectAdmin {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+// 评分档位（PRD 第 10 节）：固定 10 档 0.5~5.0，HR 只能改 label，不能增删档位
+model ProjectScale {
+  id        String  @id @default(cuid())
+  projectId String
+  value     Decimal @db.Decimal(3, 1)
+  label     String
+  order     Int
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, value])
+}

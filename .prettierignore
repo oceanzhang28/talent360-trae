@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+build
+app/generated
+package-lock.json
+docs
+test-results
+playwright-report
+prisma/migrations

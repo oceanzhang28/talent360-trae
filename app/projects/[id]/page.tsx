@@ -1,6 +1,14 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { getCurrentUser } from "@/modules/auth/service";
 import { ApiError } from "@/lib/permissions";
 import { getProject } from "@/modules/projects/service";
@@ -70,6 +78,19 @@ export default async function ProjectDetailPage({
           !questionnaire?.lockedAt
         }
       />
+      <Card>
+        <CardHeader>
+          <CardTitle>人员与评价关系</CardTitle>
+          <CardDescription>
+            Excel 导入（预检查 → 正式导入）、手工增删改、自评自动生成
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/projects/${project.id}/people`}>管理人员与关系</Link>
+          </Button>
+        </CardContent>
+      </Card>
       <ScalesEditor
         projectId={project.id}
         scales={scales}

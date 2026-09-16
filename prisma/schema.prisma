@@ -47,30 +47,30 @@ model User {
 
 // 测评项目（单公司内部工具，任何登录用户可创建，创建者自动成为项目管理员）
 model Project {
-  id                        String        @id @default(cuid())
-  name                      String
-  description              String?       @db.Text
-  questionnaireInstruction String?       @db.Text
-  startAt                   DateTime?
-  endAt                     DateTime?
-  status                    ProjectStatus @default(DRAFT)
-  selfReviewEnabled         Boolean       @default(true)
-  // 关系权重（PRD 第 33 节）：百分数，发布时校验三者合计 = 100
-  managerWeight             Decimal       @default(40) @db.Decimal(5, 2)
-  peerWeight                Decimal       @default(30) @db.Decimal(5, 2)
-  subordinateWeight         Decimal       @default(30) @db.Decimal(5, 2)
-  frozenAt                  DateTime?
-  frozenBy                  String?
-  deletedAt                 DateTime?
-  purgeAfter                DateTime?
-  createdAt                 DateTime      @default(now())
-  updatedAt                 DateTime      @updatedAt
+  id                       String           @id @default(cuid())
+  name                     String
+  description              String?          @db.Text
+  questionnaireInstruction String?          @db.Text
+  startAt                  DateTime?
+  endAt                    DateTime?
+  status                   ProjectStatus    @default(DRAFT)
+  selfReviewEnabled        Boolean          @default(true)
+  managerWeight            Decimal          @default(40) @db.Decimal(5, 2)
+  peerWeight               Decimal          @default(30) @db.Decimal(5, 2)
+  subordinateWeight        Decimal          @default(30) @db.Decimal(5, 2)
+  frozenAt                 DateTime?
+  frozenBy                 String?
+  deletedAt                DateTime?
+  purgeAfter               DateTime?
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
 
-  admins ProjectAdmin[]
-  scales ProjectScale[]
+  admins        ProjectAdmin[]
+  scales        ProjectScale[]
   questionnaire Questionnaire?
-
-  @@index([status])
+  people        ProjectPerson[]
+  relations     ReviewRelation[]
+  tasks         ReviewTask[]
 }
 
 // 项目管理员（HR）：项目级权限，系统管理员天然拥有所有项目权限
@@ -162,4 +162,110 @@ model Question {
 
   @@unique([dimensionId, code])
   @@index([dimensionId])
+}
+
+// 评价关系类型（技术文档第 17 节）：始终从被评人视角定义（李四评价张三 = 上级）
+enum RelationType {
+  SELF
+  MANAGER
+  PEER
+  SUBORDINATE
+}
+
+// 评价任务状态机（技术文档第 18 节）：NOT_STARTED → IN_PROGRESS → SUBMITTED ⇄ RETURNED
+enum TaskStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  SUBMITTED
+  RETURNED
+}
+
+// 审计动作（技术文档第 25 节）：仅关键操作
+enum AuditAction {
+  RETURN_REVIEW
+  DELETE_RELATION
+  CHANGE_RELATION
+  FREEZE_PROJECT
+  UNFREEZE_PROJECT
+  EXPORT_RESULTS
+  SYNC_FEISHU
+  DELETE_PROJECT
+  RESTORE_PROJECT
+}
+
+// 项目人员快照（技术文档第 12 节 / PRD 第 19 节）：每项目独立，unique(projectId, employeeNo)
+// 修改一个项目的人员信息不影响其他项目历史记录（铁律 6）
+model ProjectPerson {
+  id           String   @id @default(cuid())
+  projectId    String
+  employeeNo   String
+  name         String
+  department   String?
+  position     String?
+  grade        String?
+  feishuOpenId String?
+  createdAt    DateTime @default(now())
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // 同一人可同时是被评人与评价人：两个自关联方向
+  revieweeRelations ReviewRelation[] @relation("Reviewee")
+  reviewerRelations ReviewRelation[] @relation("Reviewer")
+
+  @@unique([projectId, employeeNo])
+  @@index([projectId])
+}
+
+// 评价关系（技术文档第 17 节）：每条关系对应一份评价任务
+// 删除已完成关系 → active=false 软删除（提交历史保留，评分时排除；PRD 第 20 节）
+model ReviewRelation {
+  id               String       @id @default(cuid())
+  projectId        String
+  revieweePersonId String
+  reviewerPersonId String
+  relationType     RelationType
+  active           Boolean      @default(true)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reviewee ProjectPerson  @relation("Reviewee", fields: [revieweePersonId], references: [id], onDelete: Cascade)
+  reviewer ProjectPerson  @relation("Reviewer", fields: [reviewerPersonId], references: [id], onDelete: Cascade)
+  tasks    ReviewTask[]
+
+  // 同一评价人 + 被评人在同一项目中只能有一种关系（PRD 第 17 节）
+  @@unique([projectId, revieweePersonId, reviewerPersonId])
+  @@index([projectId])
+  @@index([reviewerPersonId])
+}
+
+// 评价任务（技术文档第 18 节）
+model ReviewTask {
+  id                       String     @id @default(cuid())
+  projectId                String
+  relationId               String     @unique
+  status                   TaskStatus @default(NOT_STARTED)
+  startedAt                DateTime?
+  submittedAt              DateTime?
+  returnedAt               DateTime?
+  currentSubmissionVersion Int?
+
+  relation ReviewRelation @relation(fields: [relationId], references: [id], onDelete: Cascade)
+  project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+// 审计日志（技术文档第 25 节）：projectId/actorUserId 不建外键，项目或用户删除后审计保留
+model AuditLog {
+  id           String      @id @default(cuid())
+  actorUserId  String
+  projectId    String?
+  action       AuditAction
+  entityType   String
+  entityId     String?
+  metadataJson String?     @db.Text
+  createdAt    DateTime    @default(now())
+
+  @@index([projectId])
+  @@index([createdAt])
 }

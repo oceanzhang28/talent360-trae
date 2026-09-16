@@ -88,20 +88,21 @@
 
 ---
 
-## Sprint 4：人员与评价关系
+## Sprint 4：人员与评价关系 ✅（2026-09-16 完成）
 
-- [ ] `ProjectPerson` / `ReviewRelation` / `ReviewTask` 模型 + migration
-- [ ] 人员快照：unique(projectId, employeeNo)，每项目独立
-- [ ] 关系 Excel 模板生成（PRD 第 16.1 节 8 字段）
-- [ ] 导入 Preview：解析 → 标准化 → 校验，返回 total/valid/errors/duplicates/conflicts，不写正式表
-- [ ] 错误检测：工号/姓名为空、工号姓名冲突、重复关系、同评价人对同一被评人双关系、非法关系类型
-- [ ] 导入 Commit：数据库事务，失败整批回滚
-- [ ] 自评自动生成：项目启用 selfReviewEnabled 时系统自动创建 SELF 关系 + 任务
-- [ ] 关系手工调整 API：新增 / 修改 / 删除（已有提交仍可调整；删除已完成关系则该评价不参与结果）
-- [ ] HR 人员与关系管理页（TanStack Table：人员列表、关系列表、增删改）
-- [ ] `AuditLog` 模型 + 删除/修改关系写审计
+- [x] `ProjectPerson` / `ReviewRelation` / `ReviewTask` 模型 + migration（`20260916053527_add_people_relations_tasks_audit`）
+- [x] 人员快照：unique(projectId, employeeNo)，每项目独立
+- [x] 关系 Excel 模板生成（PRD 第 16.1 节 8 字段）
+- [x] 导入 Preview：解析 → 标准化 → 校验，返回 total/valid/errors/duplicates/conflicts，不写正式表
+- [x] 错误检测：工号/姓名为空、工号姓名冲突、重复关系、同评价人对同一被评人双关系、非法关系类型
+- [x] 导入 Commit：数据库事务，失败整批回滚；整体替换非 SELF 关系（按 pairKey 对齐，已提交软删/未提交物理删）
+- [x] 自评自动生成：项目启用 selfReviewEnabled 时系统自动创建 SELF 关系 + 任务；关闭时移除；HR 删除过的自评不自动恢复
+- [x] 关系手工调整 API：新增 / 修改 / 删除（已有提交仍可调整；删除已完成关系则该评价不参与结果）
+- [x] HR 人员与关系管理页（TanStack Table v8：人员列表、关系列表、导入向导、手工增删改）
+- [x] `AuditLog` 模型 + 删除/修改关系写审计
 
-**验收**：PRD 第 18 节预检查场景全部覆盖；860 行量级 Excel 导入（200 被评人规模）Preview 秒级返回。
+**验收**：PRD 第 18 节预检查场景全部覆盖（集成测试断言全部 5 类问题）；860 行量级 Excel 导入（200 被评人规模）Preview < 1s、Commit < 1s（限值 5s/15s）。
+**测试**：单元 26（relations 校验 13 + 模板往返等）、集成 13（两阶段/替换/自评/调整/审计/权限/状态窗口/性能）、E2E 4（预检查拦截 + 完整导入流程 × chromium/mobile）。
 
 ---
 

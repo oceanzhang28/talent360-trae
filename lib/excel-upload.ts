@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { ApiError } from "@/lib/permissions";
 
-/** 从 multipart 请求中提取上传的 .xlsx 文件内容 */
+/** 从 multipart 请求中提取上传的 .xlsx 文件内容（问卷 / 关系导入共用） */
 export async function readExcelUpload(req: NextRequest): Promise<Buffer> {
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");

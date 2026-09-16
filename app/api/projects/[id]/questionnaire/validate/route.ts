@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { requireLogin, requireProjectAdmin, withApi } from "@/lib/permissions";
 import { checkQuestionnaireExcel } from "@/modules/questionnaires/service";
-import { readExcelUpload } from "@/modules/questionnaires/upload";
+import { readExcelUpload } from "@/lib/excel-upload";
 
 type Ctx = { params: Promise<{ id: string }> };
 

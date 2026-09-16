@@ -460,7 +460,14 @@ describe.skipIf(!process.env.DATABASE_URL)(
       // 把李四评张三的 Q1 原始答案从 4 改成 1（绕过所有业务入口）
       const q1 = await questionIdByCode("Q1");
       const managerTask = await prisma.reviewTask.findFirst({
-        where: { relation: { projectId, reviewer: { employeeNo: LISI_NO } } },
+        where: {
+          relation: {
+            projectId,
+            relationType: "MANAGER",
+            reviewer: { employeeNo: LISI_NO },
+            reviewee: { employeeNo: ZHANGSAN_NO },
+          },
+        },
         include: { submissions: { where: { invalidatedAt: null } } },
       });
       expect(managerTask).not.toBeNull();

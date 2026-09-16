@@ -36,6 +36,31 @@ npm run dev                          # 启动开发服务器 → http://localhos
 | `npm run db:studio`         | Prisma Studio 数据库管理界面                                     |
 | `npm run format`            | Prettier 格式化                                                  |
 
+## 飞书登录配置（真机联调 / 生产）
+
+开发期用 `AUTH_MODE=mock` 即可，无需真实飞书应用。要用真实飞书身份登录，需先在飞书开放平台准备：
+
+1. 创建**企业自建应用**，在「凭证与基础信息」取得 App ID / App Secret
+2. 「安全设置 → 重定向 URL」加入回调地址，须与 `FEISHU_REDIRECT_URI` **完全一致**
+   （本机联调 `http://localhost:3001/api/auth/feishu/callback`）
+3. 「权限管理」申请并**发布版本**（企业内通常需管理员审批）后才生效，至少需要：
+   - 用户授权 scope：`contact:user.base:readonly`（基础信息）、`contact:user.employee_id:readonly`（工号）
+   - 字段权限：**获取用户受雇信息** —— `user_info` 返回 `employee_no` 的前置条件，
+     缺失时登录会因「身份匹配失败」被拒（PRD 第 22 节，`employeeNo` 是唯一身份键）
+4. `.env` 配置：`AUTH_MODE=feishu` + `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URI`
+   （可选 `FEISHU_SCOPES` 指定需用户授权的 scope，留空则不传 `scope` 参数）
+
+端点口径（2026-09 按官方文档核对，见 `modules/feishu/auth.ts`）：
+
+| 用途                   | 端点                                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------------------- |
+| 获取授权码             | `accounts.feishu.cn/open-apis/authen/v1/authorize`（`client_id` + `response_type=code`） |
+| 换取 user_access_token | `accounts.feishu.cn/oauth/v3/token`                                                      |
+| 获取用户信息           | `open.feishu.cn/open-apis/authen/v1/user_info`                                           |
+
+> 生产环境（`NODE_ENV=production`）若误配 `AUTH_MODE=mock`，服务会**拒绝启动**
+> （`instrumentation.ts` 启动断言：mock 登录等于任意工号可登录并自动建号）。
+
 ## 项目文档
 
 - [docs/360测评平台产品需求文档 PRD.md](docs/360测评平台产品需求文档%20PRD.md) — 产品需求

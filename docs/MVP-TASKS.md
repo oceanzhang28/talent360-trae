@@ -233,3 +233,20 @@
 
 **验收结果**：✅ 未冻结项目直接进入结果后台可见实时分数（张三 上级 4.00 → 总分 4.00 / 完成 1/4，无提交者显示「—」），冻结后读快照行为不变；用户管理可新增/编辑/批量导入人员并落库 部门/岗位/职级。新增集成测试 `tests/integration/admin-users.test.ts`（9 用例：新增 201/唯一 409/权限 403/编辑清空/禁改自己角色/列表新字段/批量导入错误行号/空文件 400）与 E2E `tests/e2e/sprint10.spec.ts`（2 用例 × 双工程），并更新 `results.test.ts` 未冻结用例为实时计分断言。全套 **205 vitest + 39 E2E** 通过，lint/typecheck/format 通过。
 
+## Sprint 11：飞书真机登录联调（P0 生产可用性）🚧 进行中
+
+背景：MVP 全部验收与真实小范围测试均使用 `AUTH_MODE=mock`，**真实员工登录链路（飞书 OAuth）从未真机验证**。开发执行规划 §P0-1 要求「在 Sprint 3 之前安排真机联调 spike，不要拖到 MVP 验收」，现已补做。核对官方文档后发现以下缺陷：
+
+- [x] **修正 OAuth 端点口径**（`modules/feishu/auth.ts`）——原实现授权走 v1 + `app_id`（open 域旧版），换 token 走 v2 `client_id`（新版），新旧混用极易拿不到 code / 换不到 token
+  - [x] 授权页：`accounts.feishu.cn/open-apis/authen/v1/authorize` + `client_id` + `response_type=code`（可选 `scope`）
+  - [x] 令牌：`accounts.feishu.cn/oauth/v3/token`（v2 已成为历史版本）
+  - [x] 用户信息：`open.feishu.cn/open-apis/authen/v1/user_info`（仍在 open 域）
+  - [x] 拆分基址配置 `FEISHU_ACCOUNTS_BASE_URL` + `FEISHU_API_BASE_URL`；新增可选 `FEISHU_SCOPES`
+  - [x] 换 token 失败时输出 `error_description`，便于联调定位（不打印 secret/token，铁律 10）
+- [x] **生产安全兜底**（`instrumentation.ts` 启动断言）：`NODE_ENV=production && AUTH_MODE=mock` 拒绝启动（开发执行规划 §P1-2；mock 登录=任意工号可登录并自动建号）
+- [x] 文档：README 增补「飞书登录配置（真机联调/生产）」清单（重定向 URL、employee_no 字段权限、端点对照表）
+- [x] 单测：`tests/unit/feishu-auth.test.ts`（6 用例：授权 URL/scope/令牌端点/失败不泄露 secret/user_info 映射/employee_no 缺失）+ `tests/unit/auth-mode.test.ts`（4 用例）
+- [ ] **真机扫码联调（待飞书自建应用凭据）**：PC 扫码 + 手机授权各跑通一次；验证身份匹配三种分支（openId 已绑定直接登录 / 按 employeeNo 匹配并回写绑定 / 冲突 409）；确认 `user_info` 实际返回 `employee_no`
+
+**前置条件（需人工在飞书开放平台完成）**：创建企业自建应用 → 配置重定向 URL → 申请「获取用户受雇信息」等权限 → 发布版本并等待管理员审批 → 将 App ID/Secret 写入 `.env`（`AUTH_MODE=feishu`）。
+

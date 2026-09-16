@@ -2,7 +2,7 @@
 
 > **使用规则**：严格按 Sprint 顺序执行，一次只做一个 Sprint。每个任务完成后勾选 `[x]`，且必须满足 `AGENTS.md` 的 Definition of Done 才能进入下一个任务。禁止跳到后面 Sprint 提前做高级功能。
 >
-> **当前进度**：Sprint 3（问卷）——Sprint 0、Sprint 1、Sprint 2 已完成 ✅
+> **当前进度**：Sprint 5（评价端·单人模式）——Sprint 0 ~ 4 已完成 ✅
 
 ---
 
@@ -106,22 +106,24 @@
 
 ---
 
-## Sprint 5：评价端（单人模式）
+## Sprint 5：评价端（单人模式）✅（2026-09-16 完成）
 
-- [ ] `GET /api/my/tasks`：按关系分组（自评/上级/平级/下级）+ 状态计数
-- [ ] 员工首页「我的待评价」：待评价/进行中/已完成人数
-- [ ] `GET /api/tasks/:id`：按被评人返回问卷结构（过滤该关系不适用的维度/题目）
-- [ ] 草稿读写：`GET/PUT /api/tasks/:id/draft`（DraftAnswer，unique(taskId, questionId)）
-- [ ] 前端自动保存：debounce 1~2s，只提交变化字段；刷新/换设备/切模式不丢数据
-- [ ] 量表题组件：10 档单选（显示项目自定义 label），必答不可空
-- [ ] 开放题组件：必填/选填校验
-- [ ] 按人提交：`POST /api/tasks/:id/submit` → 生成 Submission v1 + SubmissionAnswer 快照；必答项不全则拒绝
-- [ ] 提交后只读查看
-- [ ] HR 退回：`POST /api/tasks/:id/return` → 任务 RETURNED + 写 AuditLog；评价人可重新编辑再提交（生成新版本，历史版本保留）
-- [ ] 任务状态机：NOT_STARTED / IN_PROGRESS / SUBMITTED / RETURNED
-- [ ] 手机端纵向问卷布局（手机优先）
+- [x] `DraftAnswer`（unique(taskId, questionId)）/ `Submission`（版本快照）/ `SubmissionAnswer` 模型 + migration（`20260916060345_add_draft_submission`）
+- [x] `requireReviewerTask(taskId)` 权限中间件（Sprint 1 顺延；按 employeeNo 匹配项目人员快照，系统管理员/HR 不放行——铁律 4）
+- [x] `GET /api/my/tasks`：按关系分组（自评/上级/平级/下级）+ 状态计数
+- [x] 员工首页「我的待评价」：待评价/进行中/已退回/已完成人数
+- [x] `GET /api/tasks/:id`：按被评人返回问卷结构（维度级 applicable + 题目级 override 过滤）
+- [x] 草稿读写：`GET/PUT /api/tasks/:id/draft`（DraftAnswer，增量保存，首次写入任务进入 IN_PROGRESS）
+- [x] 前端自动保存：debounce 1.5s，只提交变化字段；刷新/换设备/切模式不丢数据
+- [x] 量表题组件：10 档单选（显示项目自定义 label），必答不可空（服务端校验 + 前端缺失标红）
+- [x] 开放题组件：必填/选填校验（≤2000 字）
+- [x] 按人提交：`POST /api/tasks/:id/submit` → 生成 Submission 版本快照 + SubmissionAnswer；必答项不全拒绝（返回缺失明细）；**首次正式提交设置问卷 lockedAt（Sprint 3 遗留 TODO）**；旧版本 invalidatedAt 标记
+- [x] 提交后只读查看（SUBMITTED / 非 ACTIVE 项目禁用输入）
+- [x] HR 退回：`POST /api/tasks/:id/return` → 任务 RETURNED + 当前 Submission 失效 + AuditLog；评价人重新编辑再提交生成新版本（历史版本保留）
+- [x] 任务状态机：NOT_STARTED / IN_PROGRESS / SUBMITTED / RETURNED（RETURNED 编辑期间保持状态，重交后才变 SUBMITTED）
+- [x] 手机端纵向问卷布局（手机优先：量表两行五列网格、吸底提交栏、纵向题目流）
 
-**验收**：单人全流程（草稿→退出→恢复→提交→HR退回→重交）在 PC + 手机浏览器均可完成；HR 任何接口拿不到草稿内容。
+**验收结果**：✅ 单人全流程（草稿→退出→恢复→提交→HR退回→重交 v2）在 PC + 手机视口均可完成（E2E chromium + mobile 各跑一遍）；铁律 4 验证：HR/系统管理员/非本人评价人访问草稿与任务详情接口一律 403（集成测试 + E2E 双覆盖）；必答缺失提交被拦截并返回缺失明细；项目 CLOSED 后草稿/提交均拒绝（只读）。单元 12（关系过滤/草稿校验/必答校验纯函数）、集成 13（全流程/版本快照/lockedAt/退回审计/状态窗口/权限）、E2E 4（全流程 × chromium/mobile + 必答拦截），全套 114 单元/集成 + 32 E2E 通过，lint/typecheck/format 通过。
 
 ---
 

@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/card";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser } from "@/modules/auth/service";
+import { listMyTasks } from "@/modules/review-tasks/service";
 import { LogoutButton } from "./logout-button";
 
 export const metadata = {
@@ -49,9 +50,50 @@ export default async function Home() {
     user.systemRole === "SYSTEM_ADMIN" ||
     (await prisma.projectAdmin.count({ where: { userId: user.id } })) > 0;
 
+  // 我的待评价（Sprint 5）：待评价/进行中/已退回/已完成
+  const my = await listMyTasks(user);
+  const pendingCount =
+    my.counts.notStarted + my.counts.inProgress + my.counts.returned;
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-6">
-      <Card className="w-full max-w-sm">
+    <main className="mx-auto flex min-h-screen w-full max-w-sm flex-col justify-center gap-6 p-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>我的待评价</CardTitle>
+          <CardDescription>
+            {pendingCount > 0
+              ? `您有 ${pendingCount} 份评价待完成`
+              : "当前没有待完成的评价"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <dl className="grid grid-cols-4 gap-2 text-center">
+            <div>
+              <dd className="text-xl font-bold">{my.counts.notStarted}</dd>
+              <dt className="text-muted-foreground text-xs">待评价</dt>
+            </div>
+            <div>
+              <dd className="text-xl font-bold">{my.counts.inProgress}</dd>
+              <dt className="text-muted-foreground text-xs">进行中</dt>
+            </div>
+            <div>
+              <dd className="text-xl font-bold">{my.counts.returned}</dd>
+              <dt className="text-muted-foreground text-xs">已退回</dt>
+            </div>
+            <div>
+              <dd className="text-xl font-bold">{my.counts.submitted}</dd>
+              <dt className="text-muted-foreground text-xs">已完成</dt>
+            </div>
+          </dl>
+          <Link
+            href="/review"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-9 w-full items-center justify-center rounded-md px-4 text-sm font-medium"
+          >
+            进入评价（共 {my.counts.total} 份）
+          </Link>
+        </CardContent>
+      </Card>
+      <Card>
         <CardHeader>
           <CardTitle>已登录</CardTitle>
           <CardDescription>当前登录身份</CardDescription>

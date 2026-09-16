@@ -1,5 +1,10 @@
 import type { NextRequest } from "next/server";
-import type { Project, User } from "@/app/generated/prisma/client";
+import type {
+  Project,
+  ReviewRelation,
+  ReviewTask,
+  User,
+} from "@/app/generated/prisma/client";
 import { getCurrentUser } from "@/modules/auth/service";
 import { prisma } from "@/lib/db/prisma";
 import { ApiError } from "./errors";
@@ -9,8 +14,6 @@ export { ApiError } from "./errors";
 /**
  * 权限中间件（技术文档第 47 节）。
  * 所有项目数据访问必须在服务端调用这些守卫，禁止用前端 if (role) 代替。
- *
- * requireReviewerTask(taskId)     → Sprint 5 引入 ReviewTask 访问控制后实现
  */
 
 /** 要求已登录，否则抛出 401 */
@@ -56,6 +59,48 @@ export async function requireProjectAdmin(
     }
   }
   return project;
+}
+
+export type ReviewerTaskContext = {
+  task: ReviewTask;
+  relation: ReviewRelation;
+  project: Project;
+};
+
+/**
+ * 要求当前用户是该评价任务的评价人（技术文档第 47 节）。
+ * 按 employeeNo 匹配项目人员快照（铁律 5），与 ReviewRelation.reviewerPersonId 比对。
+ * 注意：系统管理员/HR 不由此守卫放行——草稿与填写内容仅评价人本人可见（铁律 4）。
+ * 未登录 401、任务不存在/已失效 404、非本人任务 403。
+ */
+export async function requireReviewerTask(
+  taskId: string,
+  user?: User,
+): Promise<ReviewerTaskContext> {
+  const current = user ?? (await requireLogin());
+  const task = await prisma.reviewTask.findUnique({
+    where: { id: taskId },
+    include: { relation: true, project: true },
+  });
+  if (!task || task.project.deletedAt || !task.relation.active) {
+    throw new ApiError(404, "评价任务不存在或已失效");
+  }
+  if (!current.employeeNo) {
+    throw new ApiError(403, "无权访问该评价任务");
+  }
+  const reviewer = await prisma.projectPerson.findUnique({
+    where: {
+      projectId_employeeNo: {
+        projectId: task.projectId,
+        employeeNo: current.employeeNo,
+      },
+    },
+    select: { id: true },
+  });
+  if (!reviewer || reviewer.id !== task.relation.reviewerPersonId) {
+    throw new ApiError(403, "无权访问该评价任务");
+  }
+  return { task, relation: task.relation, project: task.project };
 }
 
 function apiErrorToResponse(err: unknown): Response {

@@ -158,7 +158,9 @@ model Question {
   applicablePeer        Boolean      @default(true)
   applicableSubordinate Boolean      @default(true)
 
-  dimension Dimension @relation(fields: [dimensionId], references: [id], onDelete: Cascade)
+  dimension    Dimension         @relation(fields: [dimensionId], references: [id], onDelete: Cascade)
+  draftAnswers DraftAnswer[]
+  submissionAnswers SubmissionAnswer[]
 
   @@unique([dimensionId, code])
   @@index([dimensionId])
@@ -178,6 +180,55 @@ enum TaskStatus {
   IN_PROGRESS
   SUBMITTED
   RETURNED
+}
+
+// 草稿答案（技术文档第 19 节）：只保存评价人当前草稿。
+// 铁律 4：DraftAnswer 永远不能通过任何 HR API 暴露（无 HR 读取接口）
+model DraftAnswer {
+  id         String    @id @default(cuid())
+  taskId     String
+  questionId String
+  score      Decimal?  @db.Decimal(3, 1)
+  textValue  String?   @db.Text
+  updatedAt  DateTime  @updatedAt
+
+  task     ReviewTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  question Question   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, questionId])
+  @@index([taskId])
+}
+
+// 正式提交（技术文档第 20 节）：每次提交生成一个版本，历史版本保留
+// 退回重评后重新提交 → version+1；旧版本 invalidatedAt 标记，计算使用当前有效版本
+model Submission {
+  id             String    @id @default(cuid())
+  taskId         String
+  version        Int
+  submittedAt    DateTime  @default(now())
+  invalidatedAt  DateTime?
+  invalidReason  String?
+
+  task     ReviewTask        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  answers  SubmissionAnswer[]
+
+  @@unique([taskId, version])
+  @@index([taskId])
+}
+
+// 提交答案快照（技术文档第 21 节）：提交时从 DraftAnswer 复制，不再随草稿变化
+model SubmissionAnswer {
+  id           String   @id @default(cuid())
+  submissionId String
+  questionId   String
+  score        Decimal? @db.Decimal(3, 1)
+  textValue    String?  @db.Text
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question   Question   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, questionId])
+  @@index([submissionId])
 }
 
 // 审计动作（技术文档第 25 节）：仅关键操作
@@ -251,6 +302,8 @@ model ReviewTask {
 
   relation ReviewRelation @relation(fields: [relationId], references: [id], onDelete: Cascade)
   project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  drafts   DraftAnswer[]
+  submissions Submission[]
 
   @@index([projectId])
 }

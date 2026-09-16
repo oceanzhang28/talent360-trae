@@ -24,7 +24,7 @@ export const RELATION_LABELS: Record<RelationType, string> = {
   SUBORDINATE: "下级",
 };
 
-const RELATION_ORDER: RelationType[] = [
+export const RELATION_ORDER: RelationType[] = [
   "SELF",
   "MANAGER",
   "PEER",

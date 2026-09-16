@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "@/modules/auth/service";
 import { ApiError } from "@/lib/permissions";
 import { listProjectResults } from "@/modules/results/service";
+import { ExportButton } from "./export-button";
 import { ResultsTable } from "./results-table";
 
 export const metadata = {
@@ -49,6 +50,12 @@ export default async function ResultsPage({
           返回进度看板
         </Link>
       </div>
+
+      {results.frozen ? (
+        <div className="flex justify-end">
+          <ExportButton projectId={id} />
+        </div>
+      ) : null}
 
       {!results.frozen ? (
         <div className="rounded-md border p-6 text-center">

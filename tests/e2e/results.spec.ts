@@ -219,6 +219,22 @@ test("进度看板 → 冻结 → 结果后台 → 下钻 → 实名明细 → �
     page.getByTestId("reviewer-detail-1").getByText("上级开放反馈：继续保持"),
   ).toBeVisible();
 
+  // --- Excel 完整导出（Sprint 9）：API 200 + xlsx 二进制；结果后台有导出按钮 ---
+  const exportRes = await page.request.post(
+    `/api/projects/${project.id}/export/excel`,
+  );
+  expect(exportRes.ok()).toBeTruthy();
+  expect(exportRes.headers()["content-type"]).toContain("spreadsheetml");
+  expect(exportRes.headers()["content-disposition"]).toContain(
+    "360_results.xlsx",
+  );
+  // xlsx 为 zip 容器，以 PK 魔数开头
+  const exportBody = Buffer.from(await exportRes.body());
+  expect(exportBody.subarray(0, 2).toString()).toBe("PK");
+
+  await page.goto(`/projects/${project.id}/results`);
+  await expect(page.getByRole("button", { name: "导出 Excel" })).toBeVisible();
+
   // --- 解冻权限：HR 无权（PRD 6.3 仅系统管理员）---
   const unfreeze = await page.request.post(
     `/api/projects/${project.id}/unfreeze`,

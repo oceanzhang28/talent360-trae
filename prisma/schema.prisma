@@ -65,6 +65,8 @@ model Project {
   frozenBy                 String?
   deletedAt                DateTime?
   purgeAfter               DateTime?
+  // 软删除前的状态（PRD 第 44 节回收站：恢复时还原到删除前状态）
+  statusBeforeDelete       ProjectStatus?
   createdAt                DateTime         @default(now())
   updatedAt                DateTime         @updatedAt
 

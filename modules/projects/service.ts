@@ -567,7 +567,7 @@ export async function archiveProject(
   return serializeProject(updated);
 }
 
-/** 软删除（任何状态 → DELETED）：仅系统管理员；30 天后可物理清除（技术文档第 58 节） */
+/** 软删除（任何状态 → DELETED）：仅系统管理员；30 天后可物理清除（PRD 第 44 节 / 技术文档第 58 节） */
 export async function deleteProject(
   projectId: string,
   user: User,
@@ -578,14 +578,197 @@ export async function deleteProject(
     throw new ApiError(409, "项目已在回收站中");
   }
   const now = new Date();
-  await prisma.project.update({
-    where: { id: projectId },
-    data: {
-      status: "DELETED",
-      deletedAt: now,
-      purgeAfter: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
-    },
+  const purgeAfter = new Date(now.getTime() + RECYCLE_BIN_DAYS * DAY_MS);
+  await prisma.$transaction(async (tx) => {
+    await tx.project.update({
+      where: { id: projectId },
+      data: {
+        status: "DELETED",
+        // 记住删除前状态，供回收站恢复时还原
+        statusBeforeDelete: project.status,
+        deletedAt: now,
+        purgeAfter,
+      },
+    });
+    await writeAudit(
+      {
+        actorUserId: user.id,
+        projectId,
+        action: "DELETE_PROJECT",
+        entityType: "Project",
+        entityId: projectId,
+        metadata: {
+          name: project.name,
+          statusBeforeDelete: project.status,
+          purgeAfter: purgeAfter.toISOString(),
+        },
+      },
+      tx,
+    );
   });
+}
+
+// ---------- 回收站（PRD 第 44 节） ----------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** 回收站保留期：30 天（PRD 第 44 节） */
+export const RECYCLE_BIN_DAYS = 30;
+
+export type DeletedProjectDTO = ProjectDTO & {
+  deletedAt: string;
+  purgeAfter: string | null;
+  /** 软删除前的状态（回收站展示与恢复目标） */
+  statusBeforeDelete: Project["status"] | null;
+  /** 距彻底清理的剩余天数（已过期为 0） */
+  daysLeft: number;
+  /** 是否已过保留期（可彻底清理） */
+  purgeable: boolean;
+};
+
+/** 回收站中的项目（仅系统管理员；不加 deletedAt 过滤，故不复用 requireProjectAdmin） */
+async function requireDeletedProject(projectId: string, user: User) {
+  await requireSystemAdmin(user);
+  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  if (!project || project.deletedAt === null) {
+    throw new ApiError(404, "回收站中不存在该项目");
+  }
+  return project;
+}
+
+function daysLeftOf(purgeAfter: Date | null): number {
+  if (!purgeAfter) return 0;
+  return Math.max(0, Math.ceil((purgeAfter.getTime() - Date.now()) / DAY_MS));
+}
+
+/** 回收站列表：按删除时间倒序 */
+export async function listDeletedProjects(
+  user: User,
+): Promise<DeletedProjectDTO[]> {
+  await requireSystemAdmin(user);
+  const projects = await prisma.project.findMany({
+    where: { deletedAt: { not: null } },
+    orderBy: { deletedAt: "desc" },
+  });
+  return projects.map((p) => ({
+    ...serializeProject(p),
+    deletedAt: p.deletedAt!.toISOString(),
+    purgeAfter: p.purgeAfter?.toISOString() ?? null,
+    statusBeforeDelete: p.statusBeforeDelete,
+    daysLeft: daysLeftOf(p.purgeAfter),
+    purgeable: p.purgeAfter !== null && p.purgeAfter.getTime() <= Date.now(),
+  }));
+}
+
+/**
+ * 从回收站恢复（仅系统管理员）：还原删除前状态，清空删除标记，写 RESTORE_PROJECT 审计。
+ * 恢复后做一次惰性状态同步：例如删除前是 ACTIVE 但截止时间已过，会自动落到 CLOSED。
+ */
+export async function restoreProject(
+  projectId: string,
+  user: User,
+): Promise<ProjectDTO> {
+  const project = await requireDeletedProject(projectId, user);
+  const restoredStatus = project.statusBeforeDelete ?? "DRAFT";
+  const restored = await prisma.$transaction(async (tx) => {
+    const updated = await tx.project.update({
+      where: { id: projectId },
+      data: {
+        status: restoredStatus,
+        statusBeforeDelete: null,
+        deletedAt: null,
+        purgeAfter: null,
+      },
+    });
+    await writeAudit(
+      {
+        actorUserId: user.id,
+        projectId,
+        action: "RESTORE_PROJECT",
+        entityType: "Project",
+        entityId: projectId,
+        metadata: {
+          name: project.name,
+          restoredStatus,
+          deletedAt: project.deletedAt?.toISOString() ?? null,
+        },
+      },
+      tx,
+    );
+    return updated;
+  });
+  return serializeProject(await syncStatus(restored));
+}
+
+/**
+ * 彻底清理（仅系统管理员）：必须已过 30 天保留期，物理删除项目并级联清理问卷/人员/关系/任务/快照。
+ * 审计先写入（AuditLog.projectId 是普通字段，不受项目删除影响，可留痕）。
+ */
+export async function purgeProject(
+  projectId: string,
+  user: User,
+): Promise<void> {
+  const project = await requireDeletedProject(projectId, user);
+  if (project.purgeAfter && project.purgeAfter.getTime() > Date.now()) {
+    throw new ApiError(
+      409,
+      `保留期未满（剩余 ${daysLeftOf(project.purgeAfter)} 天），暂不能彻底清理`,
+    );
+  }
+  await prisma.$transaction(async (tx) => {
+    await writeAudit(
+      {
+        actorUserId: user.id,
+        projectId,
+        action: "DELETE_PROJECT",
+        entityType: "Project",
+        entityId: projectId,
+        metadata: {
+          purged: true,
+          name: project.name,
+          deletedAt: project.deletedAt?.toISOString() ?? null,
+        },
+      },
+      tx,
+    );
+    await tx.project.delete({ where: { id: projectId } });
+  });
+}
+
+/** 一键清理所有已过保留期的回收站项目，返回清理数量 */
+export async function purgeExpiredProjects(
+  user: User,
+): Promise<{ purged: number }> {
+  await requireSystemAdmin(user);
+  const expired = await prisma.project.findMany({
+    where: { deletedAt: { not: null }, purgeAfter: { lte: new Date() } },
+    select: { id: true, name: true, deletedAt: true },
+  });
+  if (expired.length === 0) return { purged: 0 };
+
+  await prisma.$transaction(async (tx) => {
+    for (const project of expired) {
+      await writeAudit(
+        {
+          actorUserId: user.id,
+          projectId: project.id,
+          action: "DELETE_PROJECT",
+          entityType: "Project",
+          entityId: project.id,
+          metadata: {
+            purged: true,
+            batch: true,
+            name: project.name,
+            deletedAt: project.deletedAt?.toISOString() ?? null,
+          },
+        },
+        tx,
+      );
+    }
+    await tx.project.deleteMany({
+      where: { id: { in: expired.map((p) => p.id) } },
+    });
+  });
+  return { purged: expired.length };
 }
 
 // ---------- 项目管理员（HR）配置 ----------

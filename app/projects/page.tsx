@@ -50,9 +50,16 @@ export default async function ProjectsPage() {
             : "仅显示您管理的项目；创建项目后自动成为项目管理员"
         }
         actions={
-          <Button asChild size="sm">
-            <Link href="/projects/new">新建项目</Link>
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {user.systemRole === "SYSTEM_ADMIN" && (
+              <Button asChild size="sm" variant="outline">
+                <Link href="/projects/recycle-bin">回收站</Link>
+              </Button>
+            )}
+            <Button asChild size="sm">
+              <Link href="/projects/new">新建项目</Link>
+            </Button>
+          </div>
         }
       />
       <Card>

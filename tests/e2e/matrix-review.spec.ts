@@ -108,6 +108,9 @@ test("PC 矩阵：打分 → 切单人（数据互通）→ 回矩阵 → 批量
     testInfo.project.name !== "chromium",
     "PC 矩阵表流程仅在 chromium 视口运行",
   );
+  // 该用例含多次客户端跳转（矩阵 ↔ 单人），全量并行运行时 Next dev 首次编译会挤占时间，
+  // 30s 默认超时易在 waitForURL 上误报；此处放宽到 60s（单独运行约 13s）
+  test.setTimeout(60_000);
 
   await mockLogin(page, HR.employeeNo, HR.name);
   const project = await setupActiveProject(page);

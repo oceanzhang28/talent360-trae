@@ -860,3 +860,209 @@ describe.skipIf(!process.env.DATABASE_URL)("人员与评价关系（Sprint 4）"
     expect(counts.tasks).toBe(1060);
   });
 });
+
+/**
+ * 人员主数据回填（Sprint 14 / PRD 16.1）：
+ * 关系 Excel 里被评人部门/岗位/职级留空、以及评价人信息（Excel 无这些列）时，
+ * 从全局人员主数据（User.department/position/grade）补全后写入项目快照。
+ */
+describe.skipIf(!process.env.DATABASE_URL)(
+  "人员主数据回填（Sprint 14）",
+  () => {
+    const HR_NO = "it-s14-hr";
+    const R1_NO = "it-s14-r1"; // 被评人（主数据齐全）
+    const V1_NO = "it-s14-v1"; // 评价人（主数据齐全）
+    const NO_MASTER_NO = "it-s14-nomaster"; // 主数据也缺部门
+    const NAME_PREFIX = "IT-S14-";
+    let hr: User;
+
+    async function buildExcel(rows: (string | number)[][]): Promise<Buffer> {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("评价关系");
+      sheet.addRow([...RELATION_TEMPLATE_HEADERS]);
+      for (const row of rows) sheet.addRow(row);
+      return Buffer.from(await workbook.xlsx.writeBuffer());
+    }
+
+    async function expectApiError(fn: () => Promise<unknown>, status: number) {
+      try {
+        await fn();
+      } catch (err) {
+        expect(err).toBeInstanceOf(ApiError);
+        expect((err as ApiError).status).toBe(status);
+        return err as ApiError;
+      }
+      throw new Error(`预期抛出 ${status}，但未抛出异常`);
+    }
+
+    async function personOf(projectId: string, employeeNo: string) {
+      return prisma.projectPerson.findUnique({
+        where: { projectId_employeeNo: { projectId, employeeNo } },
+      });
+    }
+
+    beforeAll(async () => {
+      const ensure = (
+        employeeNo: string,
+        name: string,
+        extra: { department?: string; position?: string; grade?: string } = {},
+      ) =>
+        prisma.user.upsert({
+          where: { employeeNo },
+          update: extra,
+          create: { employeeNo, name, systemRole: "USER", ...extra },
+        });
+      hr = await ensure(HR_NO, "集成测试S14HR");
+      await Promise.all([
+        ensure(R1_NO, "回填被评人", {
+          department: "商品中心",
+          position: "商品经理",
+          grade: "经理级",
+        }),
+        ensure(V1_NO, "回填评价人", {
+          department: "供应链中心",
+          position: "供应链专员",
+          grade: "专员级",
+        }),
+        // 主数据里只有姓名，没有部门/岗位/职级
+        ensure(NO_MASTER_NO, "无主数据人员"),
+      ]);
+    });
+
+    afterAll(async () => {
+      await prisma.project.deleteMany({
+        where: { name: { startsWith: NAME_PREFIX } },
+      });
+      await prisma.user.deleteMany({
+        where: { employeeNo: { in: [HR_NO, R1_NO, V1_NO, NO_MASTER_NO] } },
+      });
+    });
+
+    /** Excel：被评人部门/岗位/职级全部留空（依赖主数据补全） */
+    function excelWithBlankRevieweeFields(): Promise<Buffer> {
+      return buildExcel([
+        [R1_NO, "回填被评人", "", "", "", V1_NO, "回填评价人", "上级"],
+      ]);
+    }
+
+    it("Preview：被评人三字段留空由主数据补全，评价人信息也取自主数据", async () => {
+      const project = await createProject(hr, { name: `${NAME_PREFIX}预览` });
+      const preview = await previewRelationsImport(
+        project.id,
+        hr,
+        await excelWithBlankRevieweeFields(),
+      );
+
+      expect(preview.total).toBe(1);
+      expect(preview.valid).toBe(1);
+      expect(preview.errors).toBe(0);
+      expect(preview.masterFilled).toBe(2); // 被评人 + 评价人
+
+      const reviewee = preview.people.find((p) => p.employeeNo === R1_NO)!;
+      expect(reviewee.department).toBe("商品中心");
+      expect(reviewee.position).toBe("商品经理");
+      expect(reviewee.grade).toBe("经理级");
+
+      const reviewer = preview.people.find((p) => p.employeeNo === V1_NO)!;
+      expect(reviewer.department).toBe("供应链中心");
+      expect(reviewer.position).toBe("供应链专员");
+      expect(reviewer.grade).toBe("专员级");
+
+      // Preview 不写库
+      expect(await personOf(project.id, R1_NO)).toBeNull();
+    });
+
+    it("Commit：补全结果写入项目人员快照（含评价人部门）", async () => {
+      const project = await createProject(hr, { name: `${NAME_PREFIX}导入` });
+      await commitRelationsImport(
+        project.id,
+        hr,
+        await excelWithBlankRevieweeFields(),
+      );
+
+      const reviewee = await personOf(project.id, R1_NO);
+      expect(reviewee?.department).toBe("商品中心");
+      expect(reviewee?.position).toBe("商品经理");
+      expect(reviewee?.grade).toBe("经理级");
+
+      const reviewer = await personOf(project.id, V1_NO);
+      expect(reviewer?.department).toBe("供应链中心");
+      expect(reviewer?.position).toBe("供应链专员");
+      expect(reviewer?.grade).toBe("专员级");
+    });
+
+    it("快照语义：导入后改主数据不影响已有快照，重新导入才按新主数据更新", async () => {
+      const project = await createProject(hr, { name: `${NAME_PREFIX}快照` });
+      await commitRelationsImport(
+        project.id,
+        hr,
+        await excelWithBlankRevieweeFields(),
+      );
+      expect((await personOf(project.id, R1_NO))?.department).toBe("商品中心");
+
+      // 用户管理里调整主数据（铁律 6：不影响已生成的项目快照）
+      await prisma.user.update({
+        where: { employeeNo: R1_NO },
+        data: { department: "线下事业部" },
+      });
+      expect((await personOf(project.id, R1_NO))?.department).toBe("商品中心");
+
+      // 再次导入（Excel 仍留空）→ 以当前主数据为准
+      await commitRelationsImport(
+        project.id,
+        hr,
+        await excelWithBlankRevieweeFields(),
+      );
+      expect((await personOf(project.id, R1_NO))?.department).toBe(
+        "线下事业部",
+      );
+
+      // 还原主数据，避免影响其他用例
+      await prisma.user.update({
+        where: { employeeNo: R1_NO },
+        data: { department: "商品中心" },
+      });
+    });
+
+    it("Excel 留空且主数据也缺字段 → 仍按 PRD 16.1 报错并拦截 Commit", async () => {
+      const project = await createProject(hr, {
+        name: `${NAME_PREFIX}缺主数据`,
+      });
+      const buffer = await buildExcel([
+        [NO_MASTER_NO, "无主数据人员", "", "", "", V1_NO, "回填评价人", "上级"],
+      ]);
+
+      const preview = await previewRelationsImport(project.id, hr, buffer);
+      expect(preview.errors).toBe(1);
+      expect(preview.valid).toBe(0);
+      expect(preview.issues[0]!.message).toContain(
+        "被评人部门为空（Excel 与人员主数据均无）",
+      );
+
+      const err = await expectApiError(
+        () => commitRelationsImport(project.id, hr, buffer),
+        400,
+      );
+      const details = err.details as { issues: { message: string }[] };
+      expect(details.issues[0]!.message).toContain("被评人部门为空");
+      expect(await personOf(project.id, NO_MASTER_NO)).toBeNull();
+    });
+
+    it("手工新增关系同样按主数据补全（无需手填部门/岗位/职级）", async () => {
+      const project = await createProject(hr, { name: `${NAME_PREFIX}手工` });
+      await createRelation(project.id, hr, {
+        revieweeEmployeeNo: R1_NO,
+        revieweeName: "回填被评人",
+        reviewerEmployeeNo: V1_NO,
+        reviewerName: "回填评价人",
+        relationType: "上级",
+      });
+
+      const reviewee = await personOf(project.id, R1_NO);
+      expect(reviewee?.department).toBe("商品中心");
+      expect(reviewee?.grade).toBe("经理级");
+      const reviewer = await personOf(project.id, V1_NO);
+      expect(reviewer?.department).toBe("供应链中心");
+    });
+  },
+);

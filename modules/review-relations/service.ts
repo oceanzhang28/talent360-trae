@@ -12,6 +12,7 @@ import {
   checkRelations,
   parseRelationType,
   type ImportedRelationType,
+  type MasterPerson,
   type PersonInput,
   type RelationsCheckResult,
 } from "./validate";
@@ -49,6 +50,51 @@ function hasSubmitted(rel: { tasks: { status: string }[] }): boolean {
   );
 }
 
+// ---------- 人员主数据（Sprint 10 的全局 User 部门/岗位/职级） ----------
+
+/**
+ * 按工号批量读取人员主数据，供关系导入与手工新增时补全部门/岗位/职级。
+ *
+ * 只在**写入时**补全一次（ProjectPerson 仍是项目快照，铁律 6）：后续用户管理里改主数据
+ * 不会影响已生成的项目人员信息。
+ */
+async function loadMasterPeople(
+  employeeNos: string[],
+): Promise<Map<string, MasterPerson>> {
+  const unique = Array.from(new Set(employeeNos.filter((no) => no !== "")));
+  if (unique.length === 0) return new Map();
+  const users = await prisma.user.findMany({
+    where: { employeeNo: { in: unique } },
+    select: {
+      employeeNo: true,
+      department: true,
+      position: true,
+      grade: true,
+    },
+  });
+  return new Map(
+    users
+      .filter(
+        (u): u is typeof u & { employeeNo: string } => u.employeeNo !== null,
+      )
+      .map((u) => [u.employeeNo, u as MasterPerson]),
+  );
+}
+
+/** 解析 Excel → 用人员主数据补全 → 校验（preview 与 commit 共用同一口径） */
+async function checkImportedRelations(
+  buffer: Buffer,
+): Promise<RelationsCheckResult> {
+  const rows = await parseRelationsExcel(buffer);
+  const masterByNo = await loadMasterPeople(
+    rows.flatMap((r) => [
+      r.revieweeEmployeeNo.trim(),
+      r.reviewerEmployeeNo.trim(),
+    ]),
+  );
+  return checkRelations(rows, { masterByNo });
+}
+
 // ---------- Preview ----------
 
 /** 预检查：解析 → 校验，不写任何正式表（PRD 第 18 节） */
@@ -58,8 +104,7 @@ export async function previewRelationsImport(
   buffer: Buffer,
 ): Promise<RelationsCheckResult> {
   await requireProjectAdmin(projectId, user);
-  const rows = await parseRelationsExcel(buffer);
-  return checkRelations(rows);
+  return checkImportedRelations(buffer);
 }
 
 // ---------- Commit ----------
@@ -84,8 +129,7 @@ export async function commitRelationsImport(
   buffer: Buffer,
 ): Promise<CommitResult> {
   await requireRelationEditable(projectId, user);
-  const rows = await parseRelationsExcel(buffer);
-  const check = checkRelations(rows);
+  const check = await checkImportedRelations(buffer);
   if (check.errors > 0 || check.conflicts > 0) {
     throw new ApiError(400, "存在错误或冲突行，请修正后重新上传", {
       issues: check.issues.filter(
@@ -515,23 +559,42 @@ export async function createRelation(
     throw new ApiError(400, "关系类型必须为：上级 / 平级 / 下级");
   }
 
+  const revieweeNo = input.revieweeEmployeeNo.trim();
+  const reviewerNo = input.reviewerEmployeeNo.trim();
+  // 手工输入优先，留空则用人员主数据补全（与 Excel 导入同一口径）
+  const masterByNo = await loadMasterPeople([revieweeNo, reviewerNo]);
+  const revieweeMaster = masterByNo.get(revieweeNo);
+  const reviewerMaster = masterByNo.get(reviewerNo);
+
   const relationId = await prisma.$transaction(async (tx) => {
     const reviewee = await upsertPersonByNo(
       tx,
       projectId,
-      input.revieweeEmployeeNo.trim(),
-      input.revieweeName?.trim() || input.revieweeEmployeeNo.trim(),
+      revieweeNo,
+      input.revieweeName?.trim() || revieweeNo,
       {
-        department: input.revieweeDepartment,
-        position: input.revieweePosition,
-        grade: input.revieweeGrade,
+        department:
+          input.revieweeDepartment?.trim() ||
+          revieweeMaster?.department ||
+          undefined,
+        position:
+          input.revieweePosition?.trim() ||
+          revieweeMaster?.position ||
+          undefined,
+        grade:
+          input.revieweeGrade?.trim() || revieweeMaster?.grade || undefined,
       },
     );
     const reviewer = await upsertPersonByNo(
       tx,
       projectId,
-      input.reviewerEmployeeNo.trim(),
+      reviewerNo,
       input.reviewerName.trim(),
+      {
+        department: reviewerMaster?.department ?? undefined,
+        position: reviewerMaster?.position ?? undefined,
+        grade: reviewerMaster?.grade ?? undefined,
+      },
     );
 
     const existing = await tx.reviewRelation.findUnique({

@@ -3,6 +3,7 @@ import type { User } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { ApiError } from "@/lib/permissions";
 import {
+  RECYCLE_BIN_DAYS,
   addAdmin,
   archiveProject,
   closeProject,
@@ -10,15 +11,21 @@ import {
   deleteProject,
   freezeProject,
   getProject,
+  listDeletedProjects,
   listProjects,
   publishProject,
+  purgeExpiredProjects,
+  purgeProject,
   removeAdmin,
+  restoreProject,
   unfreezeProject,
   updateProject,
   updateScaleLabels,
 } from "@/modules/projects/service";
 import { importQuestionnaire } from "@/modules/questionnaires/service";
 import { generateQuestionnaireTemplate } from "@/modules/questionnaires/excel";
+import { commitRelationsImport } from "@/modules/review-relations/service";
+import { generateRelationTemplate } from "@/modules/review-relations/excel";
 
 /**
  * Sprint 2 集成测试：项目状态机 / 权限 / 发布校验 / 时间操作 / 管理员 / 档位 / 软删除。
@@ -338,7 +345,7 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
     );
   });
 
-  it("软删除：仅系统管理员；删除后列表/详情不可见", async () => {
+  it("软删除：仅系统管理员；删除后列表/详情不可见，并写 DELETE_PROJECT 审计", async () => {
     const project = await createProject(hr1, { name: `${NAME_PREFIX}待删除` });
 
     // HR 不能删除
@@ -350,12 +357,239 @@ describe.skipIf(!process.env.DATABASE_URL)("项目管理（Sprint 2）", () => {
     const list = await listProjects(hr1);
     expect(list.map((p) => p.id)).not.toContain(project.id);
 
-    // 数据库中仍存在（软删除）
+    // 数据库中仍存在（软删除），且记住删除前状态（PRD 44 恢复时还原）
     const row = await prisma.project.findUniqueOrThrow({
       where: { id: project.id },
     });
     expect(row.status).toBe("DELETED");
     expect(row.deletedAt).not.toBeNull();
     expect(row.purgeAfter).not.toBeNull();
+    expect(row.statusBeforeDelete).toBe("DRAFT");
+
+    // PRD 第 45 节：删除项目必须写审计
+    const audit = await prisma.auditLog.findFirst({
+      where: { projectId: project.id, action: "DELETE_PROJECT" },
+    });
+    expect(audit).not.toBeNull();
+    expect(audit!.actorUserId).toBe(admin.id);
+    const metadata = JSON.parse(audit!.metadataJson ?? "{}") as {
+      statusBeforeDelete: string;
+    };
+    expect(metadata.statusBeforeDelete).toBe("DRAFT");
+  });
+});
+
+/**
+ * 回收站与恢复（PRD 第 44 节）：
+ * 删除进回收站 → 30 天内可恢复（还原删除前状态）→ 超期可彻底清理（物理删除 + 级联）。
+ */
+describe.skipIf(!process.env.DATABASE_URL)("回收站与恢复（Sprint 15）", () => {
+  const HR_NO = "it-s15-hr";
+  const EMP_NO = "it-s15-emp";
+  const ADMIN_NO = "it-s15-admin";
+  const NAME_PREFIX = "IT-S15-";
+  let hr: User;
+  let emp: User;
+  let admin: User;
+
+  const DAY = 24 * 60 * 60 * 1000;
+
+  async function expectApiError(fn: () => Promise<unknown>, status: number) {
+    try {
+      await fn();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).status).toBe(status);
+      return err as ApiError;
+    }
+    throw new Error(`预期抛出 ${status}，但未抛出异常`);
+  }
+
+  /** 把保留期改到过去（模拟超过 30 天） */
+  async function expireRetention(projectId: string) {
+    await prisma.project.update({
+      where: { id: projectId },
+      data: { purgeAfter: new Date(Date.now() - DAY) },
+    });
+  }
+
+  beforeAll(async () => {
+    const ensure = (employeeNo: string, name: string) =>
+      prisma.user.upsert({
+        where: { employeeNo },
+        update: {},
+        create: { employeeNo, name, systemRole: "USER" },
+      });
+    [hr, emp] = await Promise.all([
+      ensure(HR_NO, "集成测试S15HR"),
+      ensure(EMP_NO, "集成测试S15员工"),
+    ]);
+    admin = await prisma.user.upsert({
+      where: { employeeNo: ADMIN_NO },
+      update: { systemRole: "SYSTEM_ADMIN" },
+      create: {
+        employeeNo: ADMIN_NO,
+        name: "集成测试S15管理员",
+        systemRole: "SYSTEM_ADMIN",
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.project.deleteMany({
+      where: { name: { startsWith: NAME_PREFIX } },
+    });
+    await prisma.user.deleteMany({
+      where: { employeeNo: { in: [HR_NO, EMP_NO, ADMIN_NO] } },
+    });
+  });
+
+  it("回收站列表：仅系统管理员可见，含剩余天数与可清理标记", async () => {
+    const project = await createProject(hr, { name: `${NAME_PREFIX}列表` });
+    await deleteProject(project.id, admin);
+
+    // 非系统管理员（含项目创建者本人）不可读取
+    await expectApiError(() => listDeletedProjects(hr), 403);
+    await expectApiError(() => listDeletedProjects(emp), 403);
+
+    const list = await listDeletedProjects(admin);
+    const row = list.find((p) => p.id === project.id)!;
+    expect(row.statusBeforeDelete).toBe("DRAFT");
+    expect(row.purgeable).toBe(false);
+    expect(row.daysLeft).toBeGreaterThan(0);
+    expect(row.daysLeft).toBeLessThanOrEqual(RECYCLE_BIN_DAYS);
+  });
+
+  it("恢复：还原删除前状态并清空删除标记，写 RESTORE_PROJECT 审计", async () => {
+    const project = await createProject(hr, {
+      name: `${NAME_PREFIX}恢复`,
+      startAt: new Date(Date.now() + DAY).toISOString(),
+      endAt: new Date(Date.now() + 8 * DAY).toISOString(),
+    });
+    await importQuestionnaire(
+      project.id,
+      hr,
+      await generateQuestionnaireTemplate(),
+    );
+    // 发布后删除，验证恢复回到 PUBLISHED（而非草稿）
+    const published = await publishProject(project.id, hr);
+    expect(published.status).toBe("PUBLISHED");
+    await deleteProject(project.id, admin);
+
+    // 权限与前置校验
+    await expectApiError(() => restoreProject(project.id, hr), 403);
+    await expectApiError(() => restoreProject("not-in-bin", admin), 404);
+
+    const restored = await restoreProject(project.id, admin);
+    expect(restored.status).toBe("PUBLISHED");
+    expect(restored.purgeAfter).toBeNull();
+
+    const row = await prisma.project.findUniqueOrThrow({
+      where: { id: project.id },
+    });
+    expect(row.deletedAt).toBeNull();
+    expect(row.purgeAfter).toBeNull();
+    expect(row.statusBeforeDelete).toBeNull();
+
+    // 恢复后重新可见
+    const list = await listProjects(hr);
+    expect(list.map((p) => p.id)).toContain(project.id);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { projectId: project.id, action: "RESTORE_PROJECT" },
+    });
+    expect(audit).not.toBeNull();
+    expect(audit!.actorUserId).toBe(admin.id);
+
+    // 已在回收站外的项目不能再次恢复
+    await expectApiError(() => restoreProject(project.id, admin), 404);
+  });
+
+  it("恢复：删除前状态缺失（历史数据）时回落为草稿", async () => {
+    const project = await createProject(hr, { name: `${NAME_PREFIX}历史` });
+    await deleteProject(project.id, admin);
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { statusBeforeDelete: null },
+    });
+    const restored = await restoreProject(project.id, admin);
+    expect(restored.status).toBe("DRAFT");
+  });
+
+  it("彻底清理：保留期未满 409；到期后物理删除并级联清理关联数据", async () => {
+    const project = await createProject(hr, { name: `${NAME_PREFIX}清理` });
+    await importQuestionnaire(
+      project.id,
+      hr,
+      await generateQuestionnaireTemplate(),
+    );
+    await commitRelationsImport(
+      project.id,
+      hr,
+      await generateRelationTemplate(),
+    );
+    await deleteProject(project.id, admin);
+
+    // 保留期未满 → 409
+    const err = await expectApiError(
+      () => purgeProject(project.id, admin),
+      409,
+    );
+    expect(err.message).toContain("保留期未满");
+    // 非系统管理员 → 403
+    await expectApiError(() => purgeProject(project.id, hr), 403);
+    expect(
+      await prisma.project.findUnique({ where: { id: project.id } }),
+    ).not.toBeNull();
+
+    // 到期后彻底清理
+    await expireRetention(project.id);
+    await purgeProject(project.id, admin);
+
+    expect(
+      await prisma.project.findUnique({ where: { id: project.id } }),
+    ).toBeNull();
+    // 级联：问卷/维度/题目/人员/关系/任务全部清除
+    const [questions, people, relations, tasks, snapshots] = await Promise.all([
+      prisma.question.count({
+        where: { dimension: { questionnaire: { projectId: project.id } } },
+      }),
+      prisma.projectPerson.count({ where: { projectId: project.id } }),
+      prisma.reviewRelation.count({ where: { projectId: project.id } }),
+      prisma.reviewTask.count({ where: { projectId: project.id } }),
+      prisma.resultSnapshot.count({ where: { projectId: project.id } }),
+    ]);
+    expect([questions, people, relations, tasks, snapshots]).toEqual([
+      0, 0, 0, 0, 0,
+    ]);
+    // 清理留痕（审计不随项目删除消失）
+    const audit = await prisma.auditLog.findFirst({
+      where: { projectId: project.id, action: "DELETE_PROJECT" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(
+      JSON.parse(audit!.metadataJson ?? "{}") as { purged?: boolean },
+    ).toMatchObject({ purged: true });
+  });
+
+  it("一键清理已过期：只清理过保留期的项目", async () => {
+    const fresh = await createProject(hr, { name: `${NAME_PREFIX}未过期` });
+    const old = await createProject(hr, { name: `${NAME_PREFIX}已过期` });
+    await deleteProject(fresh.id, admin);
+    await deleteProject(old.id, admin);
+    await expireRetention(old.id);
+
+    const result = await purgeExpiredProjects(admin);
+    expect(result.purged).toBeGreaterThanOrEqual(1);
+
+    expect(
+      await prisma.project.findUnique({ where: { id: old.id } }),
+    ).toBeNull();
+    expect(
+      await prisma.project.findUnique({ where: { id: fresh.id } }),
+    ).not.toBeNull();
+
+    // 非系统管理员 → 403
+    await expectApiError(() => purgeExpiredProjects(hr), 403);
   });
 });

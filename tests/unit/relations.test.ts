@@ -177,6 +177,89 @@ describe("checkRelations（PRD 第 18 节预检查）", () => {
   });
 });
 
+describe("人员主数据回填（PRD 16.1 留空场景）", () => {
+  const master = new Map([
+    [
+      "10001",
+      {
+        employeeNo: "10001",
+        department: "商品中心",
+        position: "商品经理",
+        grade: "经理级",
+      },
+    ],
+    [
+      "10002",
+      {
+        employeeNo: "10002",
+        department: "供应链中心",
+        position: "供应链专员",
+        grade: "专员级",
+      },
+    ],
+  ]);
+
+  it("被评人三字段留空 → 从主数据补全，不再是错误行", () => {
+    const result = checkRelations(
+      [
+        makeRow({
+          revieweeDepartment: "",
+          revieweePosition: "",
+          revieweeGrade: "",
+          // 评价人不在主数据中，便于单独断言被评人的补全计数
+          reviewerEmployeeNo: "88888",
+          reviewerName: "外部评价人",
+        }),
+      ],
+      { masterByNo: master },
+    );
+    expect(result.errors).toBe(0);
+    expect(result.valid).toBe(1);
+    const p = result.people.find((x) => x.employeeNo === "10001")!;
+    expect(p.department).toBe("商品中心");
+    expect(p.position).toBe("商品经理");
+    expect(p.grade).toBe("经理级");
+    expect(result.masterFilled).toBe(1);
+  });
+
+  it("Excel 显式填写优先于主数据", () => {
+    const result = checkRelations(
+      [makeRow({ revieweeDepartment: "线下事业部" })],
+      { masterByNo: master },
+    );
+    const p = result.people.find((x) => x.employeeNo === "10001")!;
+    expect(p.department).toBe("线下事业部"); // Excel 优先
+    expect(p.position).toBe("商品经理"); // 其余留空由主数据补
+  });
+
+  it("评价人信息（Excel 无这些列）取自主数据", () => {
+    const result = checkRelations([makeRow()], { masterByNo: master });
+    const reviewer = result.people.find((x) => x.employeeNo === "10002")!;
+    expect(reviewer.department).toBe("供应链中心");
+    expect(reviewer.position).toBe("供应链专员");
+    expect(reviewer.grade).toBe("专员级");
+    expect(result.masterFilled).toBe(1);
+  });
+
+  it("主数据也没有该字段 → 仍按 PRD 16.1 报错，且提示两处均无", () => {
+    const result = checkRelations(
+      [makeRow({ revieweeEmployeeNo: "99999", revieweeDepartment: "" })],
+      { masterByNo: master },
+    );
+    expect(result.errors).toBe(1);
+    expect(result.issues[0]!.message).toContain(
+      "被评人部门为空（Excel 与人员主数据均无）",
+    );
+    expect(result.masterFilled).toBe(0);
+  });
+
+  it("不传主数据时保持原有必填校验（兼容旧调用）", () => {
+    const result = checkRelations([makeRow({ revieweePosition: "" })]);
+    expect(result.errors).toBe(1);
+    expect(result.masterFilled).toBe(0);
+  });
+});
+
 describe("关系 Excel 模板", () => {
   it("模板生成 → 解析 → 校验全部通过（往返一致）", async () => {
     const buffer = await generateRelationTemplate();

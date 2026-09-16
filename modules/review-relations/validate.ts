@@ -65,6 +65,20 @@ export type RelationsCheckResult = {
   issues: PreviewIssue[];
   relations: ValidRelationRow[];
   people: PersonInput[];
+  /** 有多少人次的部门/岗位/职级来自人员主数据补全（PRD 16.1 留空场景） */
+  masterFilled: number;
+};
+
+/**
+ * 全局人员主数据（User 表，Sprint 10 引入）中与项目快照相关的字段。
+ * 用途：关系 Excel 里被评人的部门/岗位/职级留空、以及评价人信息（Excel 根本没有这些列）时补全。
+ * 只做「写入时一次性补全」，ProjectPerson 仍是快照（铁律 6），不做运行时联查。
+ */
+export type MasterPerson = {
+  employeeNo: string;
+  department: string | null;
+  position: string | null;
+  grade: string | null;
 };
 
 /** 解析关系文本：上级/平级/下级 → 枚举；其余返回 null */
@@ -83,16 +97,45 @@ function labelOf(type: ImportedRelationType): string {
 /**
  * 校验全部行并汇总（PRD 第 18 节预检查）。
  * 分类互斥：error（字段/格式问题）→ duplicate（与已见完全相同）→ conflict（同 pair 不同类型）。
+ *
+ * `masterByNo` 为人员主数据（可选）：被评人的部门/岗位/职级留空时补全，评价人信息全部取自它
+ * （PRD 16.1 的 Excel 只有被评人这三个字段，评价人只有工号+姓名）。补全后仍为空才算错误。
  */
 export function checkRelations(
   rows: ParsedRelationRow[],
+  options?: { masterByNo?: Map<string, MasterPerson> },
 ): RelationsCheckResult {
+  const masterByNo = options?.masterByNo ?? new Map<string, MasterPerson>();
   const issues: PreviewIssue[] = [];
   const relations: ValidRelationRow[] = [];
   const nameByNo = new Map<string, string>();
   const pairTypes = new Map<string, ImportedRelationType>();
   const exactSeen = new Set<string>();
   const peopleMap = new Map<string, PersonInput>();
+  const masterFilledSet = new Set<string>();
+
+  /** 取主数据字段：Excel 显式填写优先，留空则用主数据 */
+  function pick(
+    excelValue: string,
+    employeeNo: string,
+    field: keyof Omit<MasterPerson, "employeeNo">,
+  ): string | null {
+    const trimmed = excelValue.trim();
+    if (trimmed) return trimmed;
+    const fromMaster = masterByNo.get(employeeNo)?.[field] ?? null;
+    if (fromMaster) masterFilledSet.add(employeeNo);
+    return fromMaster;
+  }
+
+  /** 评价人信息 Excel 不提供，直接取主数据 */
+  function fromMaster(
+    employeeNo: string,
+    field: keyof Omit<MasterPerson, "employeeNo">,
+  ): string | null {
+    const value = masterByNo.get(employeeNo)?.[field] ?? null;
+    if (value) masterFilledSet.add(employeeNo);
+    return value;
+  }
 
   /** 记录工号→姓名；同工号不同姓名报冲突错误（PRD 18：工号姓名冲突） */
   function checkNameConflict(employeeNo: string, name: string, role: string) {
@@ -127,13 +170,20 @@ export function checkRelations(
   for (const r of rows) {
     rowCounter = r.row;
 
+    const revieweeKey = r.revieweeEmployeeNo.trim();
+    // 部门/岗位/职级：Excel 留空则用人员主数据补全（补全后仍为空才算错误）
+    const department = pick(r.revieweeDepartment, revieweeKey, "department");
+    const position = pick(r.revieweePosition, revieweeKey, "position");
+    const grade = pick(r.revieweeGrade, revieweeKey, "grade");
+
     // 1. 字段级错误（工号/姓名为空 → PRD 18；被评人部门/岗位/职级必填 → PRD 16.1）
     const fieldErrors: string[] = [];
     if (!r.revieweeEmployeeNo.trim()) fieldErrors.push("被评人工号为空");
     if (!r.revieweeName.trim()) fieldErrors.push("被评人姓名为空");
-    if (!r.revieweeDepartment.trim()) fieldErrors.push("被评人部门为空");
-    if (!r.revieweePosition.trim()) fieldErrors.push("被评人岗位为空");
-    if (!r.revieweeGrade.trim()) fieldErrors.push("被评人职级为空");
+    if (!department)
+      fieldErrors.push("被评人部门为空（Excel 与人员主数据均无）");
+    if (!position) fieldErrors.push("被评人岗位为空（Excel 与人员主数据均无）");
+    if (!grade) fieldErrors.push("被评人职级为空（Excel 与人员主数据均无）");
     if (!r.reviewerEmployeeNo.trim()) fieldErrors.push("评价人工号为空");
     if (!r.reviewerName.trim()) fieldErrors.push("评价人姓名为空");
     if (fieldErrors.length > 0) {
@@ -201,20 +251,20 @@ export function checkRelations(
       relationType,
     });
 
-    // 人员汇总：被评人带完整信息；评价人仅工号姓名
+    // 人员汇总：被评人带完整信息（Excel 优先，主数据补全）；评价人信息取自主数据
     upsertPerson({
       employeeNo: revieweeNo,
       name: revieweeName,
-      department: r.revieweeDepartment.trim() || null,
-      position: r.revieweePosition.trim() || null,
-      grade: r.revieweeGrade.trim() || null,
+      department,
+      position,
+      grade,
     });
     upsertPerson({
       employeeNo: reviewerNo,
       name: reviewerName,
-      department: null,
-      position: null,
-      grade: null,
+      department: fromMaster(reviewerNo, "department"),
+      position: fromMaster(reviewerNo, "position"),
+      grade: fromMaster(reviewerNo, "grade"),
     });
   }
 
@@ -230,5 +280,6 @@ export function checkRelations(
     issues,
     relations,
     people: Array.from(peopleMap.values()),
+    masterFilled: masterFilledSet.size,
   };
 }

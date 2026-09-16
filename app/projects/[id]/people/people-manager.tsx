@@ -51,6 +51,8 @@ type PreviewData = {
   errors: number;
   duplicates: number;
   conflicts: number;
+  /** 部门/岗位/职级来自人员主数据补全的人数 */
+  masterFilled: number;
   issues: { row: number; type: string; message: string }[];
 };
 
@@ -326,6 +328,7 @@ export function PeopleManager({
           <CardTitle>Excel 导入（两阶段）</CardTitle>
           <CardDescription>
             先预检查（总行数 / 有效 / 错误 / 重复 / 冲突），确认无误后正式导入。
+            部门/岗位/职级留空时自动从人员主数据（用户管理）补全，评价人信息也取自主数据。
             正式导入为整体替换：Excel 之外的旧关系将被移除
             {selfReviewEnabled ? "；新被评人的自评关系自动生成" : ""}
           </CardDescription>
@@ -378,6 +381,11 @@ export function PeopleManager({
                 {preview.conflicts > 0 && (
                   <span className="text-destructive">
                     冲突：{preview.conflicts}
+                  </span>
+                )}
+                {preview.masterFilled > 0 && (
+                  <span className="text-muted-foreground">
+                    人员主数据补全：{preview.masterFilled} 人
                   </span>
                 )}
               </div>
